@@ -15,8 +15,8 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-}
       STORAGE_MASTER_KEY: ${STORAGE_MASTER_KEY:-}
       REPORTS_DIRECTORY: /data/reports
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
       - reports:/data/reports
     depends_on:
