@@ -405,6 +405,12 @@ Admin-only endpoints are under `/v1/storage`: `profiles`, `profiles/{id}/test`, 
 
 Storage is portable, but it is not the only stateful component. Postgres contains template metadata, report records, input snapshots, and audit data and must remain available or be migrated with the deployment. Redis only contains queue execution state; drain the queue before moving or accept re-enqueuing unfinished jobs.
 
+## Health checks
+
+The Compose definition configures Docker health checks for every service. The public API check is `GET /healthz` on container port `8080`; it returns `200` only when PostgreSQL and Redis are reachable and otherwise returns `503`. The worker exposes an internal `GET /healthz` on port `8081` with the same dependency checks. PostgreSQL uses `pg_isready`, and Redis uses `redis-cli ping`.
+
+Coolify Compose deployments read these checks directly from `compose.yaml` and do not use Coolify's standard application **Healthcheck** configuration page. After redeployment, inspect the individual Compose services: `api`, `worker`, `postgres`, and `redis` should all become healthy after their startup grace periods. Only the API should have a public domain.
+
 ## Configuration
 
 | Variable | Default | Purpose |

@@ -875,7 +875,7 @@ X-Content-SHA256: <pdf-sha256>`}</CodeSample>
           <tr><td><code>RENDER_TIMEOUT</code></td><td>Per-report Typst timeout; defaults to 60 seconds</td></tr>
           <tr><td><code>RENDERER_VERSION</code></td><td>Audit version recorded on report jobs</td></tr>
         </tbody></table></div>
-        <p className="docs-note"><code>GET /healthz</code> is unauthenticated and checks PostgreSQL and Redis readiness. Point the public domain only at the API service on container port 8080; workers and data services remain private.</p>
+        <p className="docs-note"><code>GET /healthz</code> on API port 8080 is unauthenticated and checks PostgreSQL and Redis readiness. The worker has a private dependency check on port 8081. Coolify Compose deployments read the checks from <code>compose.yaml</code>, not the standard application Healthcheck page. Point the public domain only at the API service.</p>
       </DocSection>
     </article>
   </section>;
