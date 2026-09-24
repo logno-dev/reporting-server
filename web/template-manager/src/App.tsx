@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
+import { EditorView } from "@codemirror/view";
 
 type VersionSummary = {
   version: number;
@@ -583,7 +584,7 @@ function App() {
         <div className={`work-grid show-${activePane}`} style={{ "--split-size": `${splitSize}%` } as React.CSSProperties}>
           <section className="editor-pane">
             <div className="pane-label"><span>Typst source</span><span>{editable ? (dirty ? "Modified" : "Editable draft") : "Read only"}</span></div>
-            <CodeMirror value={source} onChange={setSource} editable={editable} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: false }} />
+            <CodeMirror value={source} onChange={setSource} editable={editable} height="100%" theme="dark" extensions={[EditorView.lineWrapping]} basicSetup={{ lineNumbers: true, foldGutter: false }} />
           </section>
           <div
             className="split-handle"
