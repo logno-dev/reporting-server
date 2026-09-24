@@ -265,7 +265,7 @@ func (r *Repository) PublishedCatalog(ctx context.Context) ([]PublishedCatalogTe
 	}
 	defer rows.Close()
 
-	var catalog []PublishedCatalogTemplate
+	catalog := make([]PublishedCatalogTemplate, 0)
 	var current *PublishedCatalogTemplate
 	for rows.Next() {
 		var slug, name string

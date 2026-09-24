@@ -9,17 +9,132 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Submit the seeded Certificate of Analysis template:
+## Application integration API
+
+The machine API is intended for trusted internal applications such as a LIMS. Report generation is asynchronous: discover a published contract, submit data, poll the returned job, and download the completed PDF.
+
+Use the report service's HTTPS origin as the base URL, for example `https://reports.example.com`. All request and response bodies are JSON unless an endpoint returns a PDF.
+
+### Authentication and scopes
+
+An administrator creates an API client and issues its key in the **API Clients** workspace. The plaintext key is shown only once. Send it as a bearer token:
+
+```http
+Authorization: Bearer rpt_live_<key-id>_<secret>
+```
+
+`X-API-Key` is accepted for compatibility, but bearer authentication is preferred. Never place a key in a URL, browser application, log, or source repository.
+
+The examples below assume:
 
 ```sh
-curl -X POST http://localhost:8080/v1/reports \
+export REPORT_API_URL='https://reports.example.com'
+export REPORT_API_KEY='rpt_live_...'
+```
+
+Scopes are independent. A client implementing the complete workflow normally needs all four:
+
+| Scope | Permitted operation |
+| --- | --- |
+| `templates:read` | Discover published template versions and contracts |
+| `reports:submit` | Submit report jobs |
+| `reports:read` | Poll and search report jobs |
+| `reports:download` | Download completed PDFs |
+
+Keys authorize service-wide access for their scopes; report jobs are not isolated by API client. Issue keys only to trusted applications and grant the minimum required scopes.
+
+### Recommended client workflow
+
+1. Fetch `GET /v1/report-templates` during integration setup or on a controlled refresh schedule.
+2. Select a concrete published `version` and retain its `schemaHash`.
+3. Validate application data against that version's `dataSchema`.
+4. Submit the exact `template`, `version`, `schemaHash`, and `data` to `POST /v1/reports`.
+5. Persist the returned `jobId`; report submission itself is not idempotent.
+6. Poll `GET /v1/reports/{jobId}` until the job is `completed` or `failed`.
+7. Download a completed PDF from its `downloadUrl` and optionally verify `X-Content-SHA256`.
+
+Pinning both `version` and `schemaHash` is recommended for production integrations. It prevents a newly published contract from silently changing an application's expected payload. Omitting `version` explicitly opts into the latest published version; the server still resolves and permanently pins a numeric version when it creates the job.
+
+### Discover report contracts
+
+`GET /v1/report-templates` requires `templates:read` and returns only immutable published versions. Typst source, sample data, drafts, and editor metadata are not exposed.
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $REPORT_API_KEY" \
+  "$REPORT_API_URL/v1/report-templates"
+```
+
+Example `200 OK` response:
+
+```json
+{
+  "items": [
+    {
+      "slug": "certificate-of-analysis",
+      "name": "Certificate of Analysis",
+      "latestVersion": 2,
+      "versions": [
+        {
+          "version": 2,
+          "publishedAt": "2026-09-23T21:54:00Z",
+          "dataSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "sample": {
+                "type": "object",
+                "properties": {
+                  "id": {"type": "string"},
+                  "description": {"type": "string"}
+                },
+                "required": ["description", "id"],
+                "additionalProperties": true
+              },
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "result": {"type": "string"},
+                    "test": {"type": "string"}
+                  },
+                  "required": ["result", "test"],
+                  "additionalProperties": true
+                }
+              }
+            },
+            "required": ["results", "sample"],
+            "additionalProperties": true
+          },
+          "schemaHash": "<schema-sha256>"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Treat `dataSchema` as the authoritative JSON Schema for that version. A schema hash is lowercase hexadecimal SHA-256 and changes when the generated contract changes. Versions published before contract analysis was introduced may expose a permissive object schema for compatibility.
+
+### Submit a report
+
+`POST /v1/reports` requires `reports:submit`.
+
+```sh
+curl --fail-with-body \
+  -X POST "$REPORT_API_URL/v1/reports" \
+  -H "Authorization: Bearer $REPORT_API_KEY" \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer rpt_live_...' \
   -d '{
     "template": "certificate-of-analysis",
-    "version": 1,
+    "version": 2,
+    "schemaHash": "<schemaHash returned by the catalog>",
     "data": {
-      "sample": {"id": "26000123", "description": "Example sample"},
+      "sample": {
+        "id": "26000123",
+        "description": "Example sample"
+      },
       "results": [
         {"test": "APC", "result": "<10"},
         {"test": "Salmonella", "result": "ND"}
@@ -28,40 +143,173 @@ curl -X POST http://localhost:8080/v1/reports \
   }'
 ```
 
-The response contains a `jobId`, resolved `templateVersion`, and `schemaHash`. Poll `GET /v1/reports/{jobId}` for status. To always select the latest published version, omit `version` from the request. Contract resolution, validation, job creation, and outbox creation share one database transaction, and the resolved numeric version is stored on the job so a later publication cannot change the queued report. Include a positive `version` to pin a specific published version explicitly.
+| Field | Required | Description |
+| --- | --- | --- |
+| `template` | Yes | Published template slug from the catalog |
+| `version` | Recommended | Positive published version; omit to use latest published |
+| `schemaHash` | Recommended | Exact hash from the selected catalog version |
+| `data` | Yes | Report input that satisfies the selected `dataSchema`; maximum 2 MiB |
 
-LIMS clients can discover valid immutable templates before submitting a report:
+Unknown request fields are rejected. A successful submission returns `202 Accepted`:
 
-```sh
-curl -H 'Authorization: Bearer rpt_live_...' \
-  'http://localhost:8080/v1/report-templates'
+```json
+{
+  "jobId": "01M384CQDRYVREG5FZN72VQWX3",
+  "status": "queued",
+  "template": "certificate-of-analysis",
+  "templateVersion": 2,
+  "schemaHash": "<resolved-schema-sha256>"
+}
 ```
 
-The catalog contains only published versions, identifies `latestVersion`, and includes `dataSchema` and `schemaHash` for every immutable version. Drafts, Typst source, storage keys, and editor-only metadata are never exposed through this machine endpoint.
+Contract resolution, validation, job creation, and durable queue intent creation occur in one PostgreSQL transaction. Redis downtime does not require client resubmission; the service dispatches the stored queue intent after Redis recovers.
 
-### Schema-driven LIMS flow
+Each successful submission creates a new report. `POST /v1/reports` does not currently support `Idempotency-Key`, so an application retry after an ambiguous network failure can create a duplicate. Persist the response promptly and reconcile uncertain submissions with `GET /v1/reports` before retrying when duplicates matter.
 
-1. Read `GET /v1/report-templates` and choose a concrete version and its `schemaHash`.
-2. Build or validate the LIMS payload against that version's `dataSchema`.
-3. Submit `template`, the numeric `version`, `schemaHash`, and `data`. A stale hash receives `409 template_contract_changed`; invalid data receives `422 data_validation_failed` with field paths.
-4. Refresh the catalog and require an intentional mapping update when a contract changes.
+### Poll a report
 
-Clients may omit `schemaHash` for compatibility, but all submissions are still validated. For controlled production integrations, pin both numeric `version` and `schemaHash`. Omitting `version` opts into a latest-published policy: the server atomically resolves and pins the version, but a newly published contract can make a previously valid payload fail. Existing versions published before contract support expose a permissive object schema and continue accepting object payloads.
-
-Report submission uses a transactional Postgres outbox. Creating the report record and its queue intent is one database transaction, so Redis downtime does not lose work. API dispatchers lease pending rows and enqueue them with the report ULID as an idempotent Asynq task ID. Once Redis recovers, pending reports are delivered automatically without client resubmission.
-
-Completed reports remain discoverable through Postgres even if a caller loses its original job ID:
+`GET /v1/reports/{jobId}` requires `reports:read`.
 
 ```sh
-curl -H 'Authorization: Bearer rpt_live_...' \
-  'http://localhost:8080/v1/reports?status=completed&sampleId=26000123'
+curl --fail-with-body \
+  -H "Authorization: Bearer $REPORT_API_KEY" \
+  "$REPORT_API_URL/v1/reports/01M384CQDRYVREG5FZN72VQWX3"
+```
 
-curl -H 'Authorization: Bearer rpt_live_...' \
+Example completed response:
+
+```json
+{
+  "jobId": "01M384CQDRYVREG5FZN72VQWX3",
+  "template": "certificate-of-analysis",
+  "templateVersion": 2,
+  "status": "completed",
+  "dataSha256": "90b0ef21e7f4042e9dab597313d570aab8fd89054f8d93047b78355bc8a23f6a",
+  "requestedBy": "api-client:01M384CQDRYVREG5FZN72VQWX3:key:01M38CN9T4ZR01FFGHDQ1GJ20G",
+  "createdAt": "2026-09-23T21:57:47.576758Z",
+  "startedAt": "2026-09-23T21:57:49.236335Z",
+  "completedAt": "2026-09-23T21:57:49.283798Z",
+  "attempts": 1,
+  "storageKey": "reports/2026/09/23/01M384CQDRYVREG5FZN72VQWX3.pdf",
+  "storageProfile": "production-r2",
+  "sha256": "8370ffacb1ca97239e4b5ebd56d66eac1d56a0fa2bc7fe7de6a1ef26a30fda9e",
+  "rendererVersion": "typst-0.13.1",
+  "downloadUrl": "/v1/reports/01M384CQDRYVREG5FZN72VQWX3/download",
+  "schemaHash": "<resolved-schema-sha256>",
+  "retryChildren": []
+}
+```
+
+Possible states are:
+
+| Status | Meaning | Client action |
+| --- | --- | --- |
+| `queued` | Waiting for a worker or an automatic retry | Continue polling |
+| `processing` | Claimed by a worker | Continue polling |
+| `completed` | PDF is available | Follow `downloadUrl` |
+| `failed` | Retry budget was exhausted | Record `error` and contact an operator if appropriate |
+
+A temporary render or storage failure may move a job from `processing` back to `queued`, so clients must not assume progress is monotonic. Poll with bounded exponential backoff, for example beginning at one second and stopping at a timeout appropriate for the application. The service does not currently return a `Retry-After` header.
+
+The immutable input payload is deliberately omitted from job responses. Optional operational fields such as `error`, `processingWorkerId`, `processingLeaseUntil`, retry lineage, output metadata, and timestamps appear only when relevant.
+
+### Search reports
+
+`GET /v1/reports` requires `reports:read` and returns newest jobs first.
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $REPORT_API_KEY" \
+  "$REPORT_API_URL/v1/reports?status=completed&sampleId=26000123&limit=50"
+```
+
+| Query parameter | Description |
+| --- | --- |
+| `status` | Exact `queued`, `processing`, `completed`, or `failed` status |
+| `template` | Exact template slug |
+| `templateVersion` | Exact positive version |
+| `sampleId` | Case-insensitive text search across the serialized report input; despite its name, it is not restricted to one JSON path |
+| `requestedBy` | Exact verified caller identity, including client and key IDs for machine callers |
+| `createdFrom` | Inclusive RFC3339 creation time |
+| `createdTo` | Exclusive RFC3339 creation time |
+| `limit` | Page size from 1 to 200; default 50 |
+| `offset` | Zero-based offset; default 0 |
+
+Example response:
+
+```json
+{
+  "items": [],
+  "limit": 50,
+  "offset": 0,
+  "hasMore": false
+}
+```
+
+Use `offset + limit` while `hasMore` is true. Report records remain searchable in PostgreSQL if an application loses a previously returned job ID.
+
+### Download a PDF
+
+`GET /v1/reports/{jobId}/download` requires `reports:download`. `HEAD` is also supported when an application only needs to check availability or inspect metadata.
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $REPORT_API_KEY" \
   -o report.pdf \
-  'http://localhost:8080/v1/reports/{jobId}/download'
+  "$REPORT_API_URL/v1/reports/01M384CQDRYVREG5FZN72VQWX3/download"
 ```
 
-`GET /v1/reports` supports `sampleId` (case-insensitive text match), `template`, exact `templateVersion`, `status`, exact `requestedBy` identity, RFC3339 `createdFrom`/`createdTo`, `limit`, and `offset` query parameters. Results include hashes, storage profile, renderer version, errors, attempt count, retry lineage, timestamps, schema hash, and a stable `downloadUrl` for completed reports. The immutable input payload is deliberately omitted. Downloads are served through the authenticated API, checked against the recorded SHA-256 digest, and never require clients to know bucket credentials or object keys.
+A successful response is `200 OK` with these headers:
+
+```http
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="certificate-of-analysis-v2-01M384CQDRYVREG5FZN72VQWX3.pdf"
+Content-Length: 17598
+Cache-Control: private, no-store
+ETag: "8370ffacb1ca97239e4b5ebd56d66eac1d56a0fa2bc7fe7de6a1ef26a30fda9e"
+X-Content-SHA256: 8370ffacb1ca97239e4b5ebd56d66eac1d56a0fa2bc7fe7de6a1ef26a30fda9e
+```
+
+The API retrieves the object through the configured storage profile and verifies its recorded SHA-256 digest before returning it. Applications never need object-store credentials.
+
+### Errors
+
+API errors use a stable machine-readable code and a human-readable message:
+
+```json
+{
+  "error": {
+    "code": "data_validation_failed",
+    "message": "report data failed template contract validation",
+    "details": [
+      {
+        "path": "$.sample.id",
+        "message": "required field is missing"
+      }
+    ]
+  }
+}
+```
+
+`details` is present for field-level validation failures. Applications should branch on the HTTP status and `error.code`, not the message text.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `400` | `invalid_request` or `invalid_*` | Malformed JSON, unknown fields, or invalid query parameters |
+| `401` | `authentication_required` or `invalid_api_key` | Missing or invalid credentials |
+| `403` | `insufficient_scope` | The key lacks the required scope |
+| `404` | `not_found` | Report or endpoint was not found |
+| `409` | `template_contract_changed` | Submitted `schemaHash` no longer matches the selected version |
+| `409` | `report_not_ready` | The requested PDF is not completed yet |
+| `413` | `request_too_large` | Report `data` exceeds 2 MiB |
+| `422` | `template_not_found` | Template or version is not published |
+| `422` | `data_validation_failed` | Report data does not satisfy the selected contract |
+| `500` | `internal_error` or `artifact_integrity_error` | Server failure or stored PDF integrity failure |
+| `503` | `storage_unavailable` | The completed artifact cannot currently be read |
+
+The maximum JSON request body is 10 MiB, with a stricter 2 MiB limit on report `data`. Retry `5xx` and network failures with backoff. Do not automatically retry contract, validation, authentication, or authorization errors without correcting the request or credentials.
+
+`GET /healthz` is unauthenticated and is intended for deployment health checks, not application workflow decisions.
 
 ## Template Manager
 

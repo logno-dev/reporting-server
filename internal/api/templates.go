@@ -244,7 +244,7 @@ func (a *API) previewTemplate(response http.ResponseWriter, request *http.Reques
 		contractError(response, err)
 		return
 	}
-	validationErrors, err := contract.Validate(analysis.DataSchema, input.SampleData)
+	validationErrors, err := contract.Validate(analysis.DataSchema, analysis.SampleData)
 	if err != nil {
 		contractError(response, err)
 		return
@@ -253,7 +253,7 @@ func (a *API) previewTemplate(response http.ResponseWriter, request *http.Reques
 		writeJSON(response, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "data_validation_failed", "message": "Sample data does not satisfy the generated contract", "details": validationErrors}})
 		return
 	}
-	pdf, err := a.renderer.Render(request.Context(), input.Source, input.SampleData)
+	pdf, err := a.renderer.Render(request.Context(), input.Source, analysis.SampleData)
 	if err != nil {
 		slog.Info("template preview failed", "error", err)
 		writeError(response, http.StatusUnprocessableEntity, "compile_failed", err.Error())

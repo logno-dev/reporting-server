@@ -79,7 +79,7 @@ function App() {
   const [user, setUser] = useState<AuthUser | null>();
 	const [contract, setContract] = useState<ContractAnalysis | null>(null);
 	const [contractBusy, setContractBusy] = useState(false);
-  const [area, setArea] = useState<"templates" | "reports" | "storage" | "clients">("templates");
+  const [area, setArea] = useState<"templates" | "reports" | "storage" | "clients" | "docs">("templates");
   const previewRequest = useRef<AbortController | null>(null);
 	const contractRequest = useRef<AbortController | null>(null);
 
@@ -441,12 +441,13 @@ function App() {
         <div className="brand-mark">T</div>
         <div className="brand-copy"><strong>Typst Reports</strong><span>Template workbench</span></div>
         <div className="topbar-actions">
-          {user.admin && <nav className="area-nav" aria-label="Administration workspaces">
+          <nav className="area-nav" aria-label="Application workspaces">
             <button className={area === "templates" ? "active" : ""} onClick={() => setArea("templates")}>Templates</button>
-            <button className={area === "reports" ? "active" : ""} onClick={() => setArea("reports")}>Reports</button>
-            <button className={area === "storage" ? "active" : ""} onClick={() => setArea("storage")}>Storage</button>
-            <button className={area === "clients" ? "active" : ""} onClick={() => setArea("clients")}>API Clients</button>
-          </nav>}
+            {user.admin && <button className={area === "reports" ? "active" : ""} onClick={() => setArea("reports")}>Reports</button>}
+            {user.admin && <button className={area === "storage" ? "active" : ""} onClick={() => setArea("storage")}>Storage</button>}
+            {user.admin && <button className={area === "clients" ? "active" : ""} onClick={() => setArea("clients")}>API Clients</button>}
+            <button className={area === "docs" ? "active" : ""} onClick={() => setArea("docs")}>Docs</button>
+          </nav>
           <span className={`connection ${message.toLowerCase().includes("failed") ? "bad" : ""}`}>{busy || message || "Ready"}</span>
           <span className="identity"><strong>{user.name}</strong><small>{user.admin ? "Administrator" : "Viewer"}</small></span>
           <button className="icon-button" onClick={logout}>Sign out</button>
@@ -560,7 +561,7 @@ function App() {
           <button className="drawer-toggle" onClick={() => setDataOpen(!dataOpen)}><span>Test data <small>report.json / data.json</small></span><span>{dataOpen ? "Hide" : "Show"}</span></button>
           {dataOpen && <div className="data-editor"><CodeMirror className="data-code-editor" value={sampleData} onChange={setSampleData} editable={editable} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: true }} /></div>}
         </section>
-      </section></> : area === "reports" ? <ReportsArea /> : area === "storage" ? <StorageArea /> : <APIClientsArea />}
+      </section></> : area === "reports" ? <ReportsArea /> : area === "storage" ? <StorageArea /> : area === "clients" ? <APIClientsArea /> : <DocsArea />}
 
       {newOpen && <NewTemplate onClose={() => setNewOpen(false)} onCreated={async (created) => {
         setNewOpen(false);
@@ -575,6 +576,245 @@ function App() {
       </div>}
     </main>
   );
+}
+
+function DocsArea() {
+  const origin = window.location.origin;
+  return <section className="docs-workspace">
+    <aside className="docs-index">
+      <div><span>Reference</span><strong>Service handbook</strong></div>
+      <nav aria-label="Documentation sections">
+        <a href="#docs-overview">Overview</a>
+        <a href="#docs-auth">Authentication</a>
+        <a href="#docs-contracts">Contracts</a>
+        <a href="#docs-submit">Submit reports</a>
+        <a href="#docs-poll">Poll and search</a>
+        <a href="#docs-download">Download PDFs</a>
+        <a href="#docs-errors">Errors and limits</a>
+        <a href="#docs-templates">Template lifecycle</a>
+        <a href="#docs-operations">Operations</a>
+        <a href="#docs-storage">Storage</a>
+        <a href="#docs-authentik">Authentik</a>
+        <a href="#docs-config">Configuration</a>
+      </nav>
+      <p>Examples use the current service origin and a managed API key.</p>
+    </aside>
+
+    <article className="docs-content">
+      <header className="docs-hero" id="docs-overview">
+        <div className="eyebrow">Developer and operator reference</div>
+        <h1>Build against immutable report contracts.</h1>
+        <p>The service turns validated JSON into version-pinned Typst reports. Application clients discover a contract, submit an asynchronous job, poll its state, and download an integrity-checked PDF.</p>
+        <div className="docs-flow" aria-label="Integration workflow">
+          <span><b>01</b> Discover</span><i />
+          <span><b>02</b> Validate</span><i />
+          <span><b>03</b> Submit</span><i />
+          <span><b>04</b> Poll</span><i />
+          <span><b>05</b> Download</span>
+        </div>
+      </header>
+
+      <DocSection id="docs-auth" label="Machine access" title="Authentication and scopes">
+        <p>An administrator creates a client and issues a key in <strong>API Clients</strong>. The plaintext key is shown once. Send it as a bearer token; <code>X-API-Key</code> remains available for compatibility.</p>
+        <CodeSample language="Example environment">{`export REPORT_API_URL='${origin}'
+export REPORT_API_KEY='rpt_live_...'`}</CodeSample>
+        <CodeSample>{`Authorization: Bearer rpt_live_<key-id>_<secret>`}</CodeSample>
+        <div className="docs-callout warning"><strong>Trust boundary</strong><span>Scopes grant service-wide access. Jobs are not isolated by API client, so issue keys only to trusted applications and grant the minimum scopes.</span></div>
+        <div className="docs-table-wrap"><table><thead><tr><th>Scope</th><th>Access</th></tr></thead><tbody>
+          <tr><td><code>templates:read</code></td><td>Published versions and schemas</td></tr>
+          <tr><td><code>reports:submit</code></td><td>Create asynchronous report jobs</td></tr>
+          <tr><td><code>reports:read</code></td><td>Poll and search jobs</td></tr>
+          <tr><td><code>reports:download</code></td><td>Download completed PDFs</td></tr>
+        </tbody></table></div>
+      </DocSection>
+
+      <DocSection id="docs-contracts" label="Step 1" title="Discover published contracts">
+        <Endpoint method="GET" path="/v1/report-templates" scope="templates:read" />
+        <p>The catalog contains only published, immutable versions. Select a numeric version and retain its <code>schemaHash</code>. Validate outgoing data against the returned draft 2020-12 <code>dataSchema</code>.</p>
+        <CodeSample>{`curl --fail-with-body \\
+  -H "Authorization: Bearer $REPORT_API_KEY" \\
+  "$REPORT_API_URL/v1/report-templates"`}</CodeSample>
+        <CodeSample language="Response - 200 OK">{`{
+  "items": [{
+    "slug": "certificate-of-analysis",
+    "name": "Certificate of Analysis",
+    "latestVersion": 2,
+    "versions": [{
+      "version": 2,
+      "publishedAt": "2026-09-23T21:54:00Z",
+      "dataSchema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
+      "schemaHash": "<schema-sha256>"
+    }]
+  }]
+}`}</CodeSample>
+        <p className="docs-note">Versions published before contract analysis may expose a permissive object schema for compatibility. The catalog remains authoritative for every version.</p>
+      </DocSection>
+
+      <DocSection id="docs-submit" label="Steps 2-3" title="Validate and submit">
+        <Endpoint method="POST" path="/v1/reports" scope="reports:submit" />
+        <p>Pin both <code>version</code> and <code>schemaHash</code> in controlled integrations. Omitting <code>version</code> selects the latest published version atomically, but a new publication can make an existing payload invalid.</p>
+        <CodeSample>{`curl --fail-with-body -X POST "$REPORT_API_URL/v1/reports" \\
+  -H "Authorization: Bearer $REPORT_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "template": "certificate-of-analysis",
+    "version": 2,
+    "schemaHash": "<catalog-schema-hash>",
+    "data": {
+      "sample": {"id": "26000123", "description": "Example sample"},
+      "results": [{"test": "APC", "result": "<10"}]
+    }
+  }'`}</CodeSample>
+        <div className="docs-table-wrap"><table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody>
+          <tr><td><code>template</code></td><td>Required</td><td>Published slug from the catalog</td></tr>
+          <tr><td><code>version</code></td><td>Recommended</td><td>Positive published version; omit only to select latest</td></tr>
+          <tr><td><code>schemaHash</code></td><td>Recommended</td><td>Exact hash from the selected catalog version</td></tr>
+          <tr><td><code>data</code></td><td>Required</td><td>JSON satisfying the selected schema; maximum 2 MiB</td></tr>
+        </tbody></table></div>
+        <CodeSample language="Response - 202 Accepted">{`{
+  "jobId": "01M384CQDRYVREG5FZN72VQWX3",
+  "status": "queued",
+  "template": "certificate-of-analysis",
+  "templateVersion": 2,
+  "schemaHash": "<resolved-schema-sha256>"
+}`}</CodeSample>
+        <div className="docs-callout"><strong>Durable submission</strong><span>Contract resolution, validation, job creation, and queue intent creation share one PostgreSQL transaction. Redis downtime does not require resubmission.</span></div>
+        <div className="docs-callout warning"><strong>No submission idempotency</strong><span>Every successful POST creates a new job. Persist the returned job ID promptly; retrying after an ambiguous network failure can create a duplicate.</span></div>
+      </DocSection>
+
+      <DocSection id="docs-poll" label="Step 4" title="Poll and search jobs">
+        <Endpoint method="GET" path="/v1/reports/{jobId}" scope="reports:read" />
+        <p>Poll with bounded exponential backoff. A temporary failure may return a processing job to <code>queued</code>, so progress is not strictly monotonic.</p>
+        <div className="state-track">
+          <span className="queued">queued</span><b>-&gt;</b><span className="processing">processing</span><b>-&gt;</b><span className="completed">completed</span>
+          <small>processing may return to queued for an automatic retry, or finish as failed</small>
+        </div>
+        <CodeSample language="Completed job - 200 OK">{`{
+  "jobId": "01M384CQDRYVREG5FZN72VQWX3",
+  "template": "certificate-of-analysis",
+  "templateVersion": 2,
+  "status": "completed",
+  "dataSha256": "<input-sha256>",
+  "createdAt": "2026-09-23T21:57:47.576758Z",
+  "completedAt": "2026-09-23T21:57:49.283798Z",
+  "attempts": 1,
+  "sha256": "<pdf-sha256>",
+  "rendererVersion": "typst-0.13.1",
+  "downloadUrl": "/v1/reports/01M384CQDRYVREG5FZN72VQWX3/download",
+  "schemaHash": "<resolved-schema-sha256>",
+  "retryChildren": []
+}`}</CodeSample>
+        <Endpoint method="GET" path="/v1/reports" scope="reports:read" />
+        <div className="docs-table-wrap"><table><thead><tr><th>Query</th><th>Behavior</th></tr></thead><tbody>
+          <tr><td><code>status</code></td><td>Exact queued, processing, completed, or failed</td></tr>
+          <tr><td><code>template</code> / <code>templateVersion</code></td><td>Exact template slug and positive version</td></tr>
+          <tr><td><code>sampleId</code></td><td>Case-insensitive text search across serialized input</td></tr>
+          <tr><td><code>requestedBy</code></td><td>Exact verified caller identity</td></tr>
+          <tr><td><code>createdFrom</code> / <code>createdTo</code></td><td>Inclusive/exclusive RFC3339 range</td></tr>
+          <tr><td><code>limit</code> / <code>offset</code></td><td>Offset pagination; limit defaults to 50 and cannot exceed 200</td></tr>
+        </tbody></table></div>
+      </DocSection>
+
+      <DocSection id="docs-download" label="Step 5" title="Download and verify the PDF">
+        <Endpoint method="GET" path="/v1/reports/{jobId}/download" scope="reports:download" />
+        <p>The API reads through managed storage and verifies the recorded SHA-256 before serving a completed PDF. <code>HEAD</code> returns the same metadata without a body.</p>
+        <CodeSample>{`curl --fail-with-body \\
+  -H "Authorization: Bearer $REPORT_API_KEY" \\
+  -o report.pdf \\
+  "$REPORT_API_URL/v1/reports/$JOB_ID/download"`}</CodeSample>
+        <CodeSample language="Response headers - 200 OK">{`Content-Type: application/pdf
+Content-Disposition: attachment; filename="certificate-of-analysis-v2-<jobId>.pdf"
+Cache-Control: private, no-store
+ETag: "<pdf-sha256>"
+X-Content-SHA256: <pdf-sha256>`}</CodeSample>
+      </DocSection>
+
+      <DocSection id="docs-errors" label="Protocol" title="Errors, retries, and limits">
+        <CodeSample language="Error envelope">{`{
+  "error": {
+    "code": "data_validation_failed",
+    "message": "report data failed template contract validation",
+    "details": [{"path": "$.sample.id", "message": "required field is missing"}]
+  }
+}`}</CodeSample>
+        <p>Branch on the HTTP status and <code>error.code</code>, not message text. Retry network errors and <code>5xx</code> responses with backoff; correct the request or credentials before retrying other responses.</p>
+        <div className="docs-table-wrap"><table><thead><tr><th>Status</th><th>Important codes</th><th>Meaning</th></tr></thead><tbody>
+          <tr><td>400</td><td><code>invalid_request</code>, <code>invalid_*</code></td><td>Malformed body or filter</td></tr>
+          <tr><td>401 / 403</td><td><code>invalid_api_key</code>, <code>insufficient_scope</code></td><td>Authentication or scope failure</td></tr>
+          <tr><td>404</td><td><code>not_found</code></td><td>Unknown job or endpoint</td></tr>
+          <tr><td>409</td><td><code>template_contract_changed</code>, <code>report_not_ready</code></td><td>Refresh the contract or continue polling</td></tr>
+          <tr><td>413</td><td><code>request_too_large</code></td><td>Report data exceeds 2 MiB</td></tr>
+          <tr><td>422</td><td><code>template_not_found</code>, <code>data_validation_failed</code></td><td>Unavailable version or contract violation</td></tr>
+          <tr><td>500 / 503</td><td><code>internal_error</code>, <code>storage_unavailable</code></td><td>Transient server or storage failure</td></tr>
+        </tbody></table></div>
+        <div className="docs-metrics"><div><strong>10 MiB</strong><span>maximum JSON body</span></div><div><strong>2 MiB</strong><span>maximum report data</span></div><div><strong>200</strong><span>maximum list page</span></div><div><strong>60s</strong><span>default render timeout</span></div></div>
+      </DocSection>
+
+      <DocSection id="docs-templates" label="Authoring" title="Template lifecycle and contracts">
+        <div className="lifecycle"><span>draft</span><b>-&gt;</b><span>approved</span><b>-&gt;</b><span>published</span></div>
+        <p>Drafts contain editable Typst source and sample JSON. Contract analysis infers explicit data access, merges missing sample fields, and produces a deterministic schema hash. Approval validates the sample and compiles the template. Approved versions are locked; publication stores the immutable artifact for workers.</p>
+        <p>Templates load report input from either <code>json("report.json")</code> or <code>json("data.json")</code>. Analysis supports dotted paths, aliases, loop aliases, and literal <code>.at("field", default: ...)</code>. Dynamic rooted lookup and unsupported metaprogramming must be rewritten into explicit access before approval.</p>
+      </DocSection>
+
+      <DocSection id="docs-operations" label="Administrator" title="Report operations">
+        <p>The <strong>Reports</strong> workspace exposes queue and worker health, searchable immutable metadata, attempt timelines, downloads, retry lineage, and guarded stale recovery.</p>
+        <div className="docs-columns"><div><strong>Retry failed work</strong><p>Retry creates a new linked job with the original data and template version. It never overwrites the failed job or an existing PDF.</p></div><div><strong>Recover stale work</strong><p>Recovery is allowed only after the processing lease expires and the owning worker heartbeat is stale. The action returns the same job to the durable queue.</p></div></div>
+        <p className="docs-note">Workers heartbeat every 12 seconds. Attempt and recovery events are append-only. The operations API is browser administrator-only and derives its audit identity from OIDC.</p>
+      </DocSection>
+
+      <DocSection id="docs-storage" label="Administrator" title="Storage profiles and migration">
+        <p>The deployment-managed filesystem profile is always available. Administrators can add private AWS S3, Cloudflare R2, MinIO, or other S3-compatible profiles; credentials are encrypted in PostgreSQL and never returned by the API.</p>
+        <ol className="docs-steps">
+          <li><b>Test</b><span>Create a profile only after its write/read/delete connectivity probe succeeds.</span></li>
+          <li><b>Copy</b><span>Start a migration that snapshots known immutable objects and verifies digest and size at the destination.</span></li>
+          <li><b>Observe</b><span>Pause, resume, or cancel dispatch while normal reads continue through available placements.</span></li>
+          <li><b>Cut over</b><span>Explicitly set the destination as default after reviewing completion. Copying never changes the default automatically.</span></li>
+        </ol>
+        <div className="docs-callout warning"><strong>Required secret</strong><span><code>STORAGE_MASTER_KEY</code> must be the same base64-encoded 32-byte key on every API and worker replica. Losing or changing it makes managed credentials unreadable.</span></div>
+      </DocSection>
+
+      <DocSection id="docs-authentik" label="Production access" title="Authentik OIDC">
+        <p>Browser access uses the authorization-code flow with PKCE. Authenticated users can view templates and compile previews; members of <code>OIDC_ADMIN_GROUP</code> can manage templates, reports, storage, and API clients.</p>
+        <ol className="docs-steps">
+          <li><b>Provider</b><span>Create an OAuth2/OpenID provider with the authorization-code flow.</span></li>
+          <li><b>Redirect</b><span>Allow the exact public URL <code>https://reports.example.com/auth/callback</code>.</span></li>
+          <li><b>Claims</b><span>Include <code>openid</code>, <code>profile</code>, <code>email</code>, and a <code>groups</code> claim.</span></li>
+          <li><b>Group</b><span>Create <code>report-admins</code>, or configure another group name.</span></li>
+        </ol>
+      </DocSection>
+
+      <DocSection id="docs-config" label="Deployment reference" title="Runtime configuration">
+        <div className="docs-table-wrap"><table><thead><tr><th>Variable</th><th>Purpose</th></tr></thead><tbody>
+          <tr><td><code>APP_ROLE</code></td><td><code>api</code> or <code>worker</code></td></tr>
+          <tr><td><code>APP_ENV</code></td><td>Use <code>production</code> to enforce production secrets and OIDC</td></tr>
+          <tr><td><code>DATABASE_URL</code></td><td>PostgreSQL connection string</td></tr>
+          <tr><td><code>REDIS_ADDRESS</code></td><td>Redis queue address</td></tr>
+          <tr><td><code>OIDC_ISSUER_URL</code>, <code>OIDC_CLIENT_ID</code>, <code>OIDC_CLIENT_SECRET</code></td><td>Authentik provider configuration</td></tr>
+          <tr><td><code>OIDC_REDIRECT_URL</code></td><td>Public <code>/auth/callback</code> URL</td></tr>
+          <tr><td><code>OIDC_ADMIN_GROUP</code></td><td>Group granted administrative access; defaults to <code>report-admins</code></td></tr>
+          <tr><td><code>SESSION_SECRET</code></td><td>At least 32 characters for signed browser sessions</td></tr>
+          <tr><td><code>STORAGE_MASTER_KEY</code></td><td>Base64 encoding of exactly 32 bytes, shared by every replica</td></tr>
+          <tr><td><code>REPORTS_DIRECTORY</code></td><td>Persistent filesystem artifact root</td></tr>
+          <tr><td><code>WORKER_CONCURRENCY</code></td><td>Concurrent report render jobs</td></tr>
+          <tr><td><code>RENDER_TIMEOUT</code></td><td>Per-report Typst timeout; defaults to 60 seconds</td></tr>
+          <tr><td><code>RENDERER_VERSION</code></td><td>Audit version recorded on report jobs</td></tr>
+        </tbody></table></div>
+        <p className="docs-note"><code>GET /healthz</code> is unauthenticated and checks PostgreSQL and Redis readiness. Point the public domain only at the API service on container port 8080; workers and data services remain private.</p>
+      </DocSection>
+    </article>
+  </section>;
+}
+
+function DocSection({ id, label, title, children }: { id: string; label: string; title: string; children: React.ReactNode }) {
+  return <section className="doc-section" id={id}><header><span>{label}</span><h2>{title}</h2></header><div className="doc-body">{children}</div></section>;
+}
+
+function Endpoint({ method, path, scope }: { method: string; path: string; scope: string }) {
+  return <div className="endpoint"><strong>{method}</strong><code>{path}</code><span>{scope}</span></div>;
+}
+
+function CodeSample({ language = "Request", children }: { language?: string; children: string }) {
+  return <div className="code-sample"><div>{language}</div><pre><code>{children}</code></pre></div>;
 }
 
 function Status({ status }: { status: VersionSummary["status"] }) {
