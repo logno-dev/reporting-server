@@ -12,6 +12,8 @@ type VersionSummary = {
 type TemplateSummary = {
   slug: string;
   name: string;
+  archivedAt?: string;
+  archivedBy?: string;
   versions: VersionSummary[];
 };
 
@@ -57,6 +59,21 @@ const starterData = `{
   }
 }`;
 
+function canonicalJSON(value: string): string {
+  function sort(input: unknown): unknown {
+    if (Array.isArray(input)) return input.map(sort);
+    if (input && typeof input === "object") {
+      return Object.fromEntries(Object.entries(input).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, sort(item)]));
+    }
+    return input;
+  }
+  try {
+    return JSON.stringify(sort(JSON.parse(value)));
+  } catch {
+    return value;
+  }
+}
+
 function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selection, setSelection] = useState<{ slug: string; version: number } | null>(null);
@@ -71,6 +88,7 @@ function App() {
   const [dataOpen, setDataOpen] = useState(true);
   const [dataHeight, setDataHeight] = useState(253);
   const [newOpen, setNewOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [activePane, setActivePane] = useState<"source" | "split" | "preview">(() =>
     window.matchMedia("(max-width: 1200px), (max-height: 760px)").matches ? "source" : "split",
   );
@@ -103,8 +121,9 @@ function App() {
       setSelection(preferred);
       return;
     }
-    if (!selection && items.length > 0 && items[0].versions.length > 0) {
-      setSelection({ slug: items[0].slug, version: items[0].versions[0].version });
+    if (!selection) {
+      const first = items.find((item) => !item.archivedAt && item.versions.length > 0);
+      if (first) setSelection({ slug: first.slug, version: first.versions[0].version });
     }
   }
 
@@ -222,14 +241,43 @@ function App() {
     }
   }
 
-  async function transition(action: "approve" | "publish") {
+  async function transition(action: "publish") {
     if (!current) return;
     setBusy(action);
     try {
       const updated = await request<TemplateVersion>(`/v1/templates/${current.slug}/versions/${current.version}/${action}`, { method: "POST" });
       setCurrent(updated);
-      setMessage(action === "approve" ? "Version approved and locked" : "Version published");
+      setMessage("Version published");
       await refresh({ slug: updated.slug, version: updated.version });
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function approveDraft() {
+    if (!current || current.status !== "draft") return;
+    setBusy(dirty ? "saving and approving" : "approving");
+    try {
+      let target = current;
+      if (dirty) {
+        target = await request<TemplateVersion>(`/v1/templates/${current.slug}/versions/${current.version}`, {
+          method: "PUT",
+          body: JSON.stringify({ source, sampleData: parsedData() }),
+        });
+        const formattedData = JSON.stringify(target.sampleData, null, 2);
+        setCurrent(target);
+        setSource(target.source);
+        setSampleData(formattedData);
+        setSavedSource(target.source);
+        setSavedSampleData(formattedData);
+      }
+      const approved = await request<TemplateVersion>(`/v1/templates/${target.slug}/versions/${target.version}/approve`, { method: "POST" });
+      setCurrent(approved);
+      setContract({ sampleData: approved.sampleData, dataSchema: approved.dataSchema, schemaHash: approved.schemaHash, diagnostics: [] });
+      setMessage("Version approved and locked");
+      await refresh({ slug: approved.slug, version: approved.version });
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -272,17 +320,40 @@ function App() {
     }
   }
 
+  async function setTemplateArchived(archived: boolean) {
+    if (!current) return;
+    const verb = archived ? "Archive" : "Restore";
+    const detail = archived
+      ? "Pinned integrations and existing reports will continue to work, but this template will be hidden from discovery."
+      : "This template will return to the published catalog and the default editor list.";
+    if (!window.confirm(`${verb} ${current.name}? ${detail}`)) return;
+    setBusy(archived ? "archiving" : "restoring");
+    try {
+      await request<void>(`/v1/templates/${current.slug}/${archived ? "archive" : "restore"}`, { method: "POST" });
+      if (!archived) setShowArchived(false);
+      await refresh({ slug: current.slug, version: current.version });
+      setMessage(archived ? "Template archived" : "Template restored");
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function logout() {
     await fetch("/auth/logout", { method: "POST" });
     setUser(null);
   }
 
-  const editable = !!user?.admin && current?.status === "draft";
-  const dirty = editable && (source !== savedSource || sampleData !== savedSampleData);
   const selectedTemplate = templates.find((template) => template.slug === current?.slug);
+  const archived = !!selectedTemplate?.archivedAt;
+  const editable = !!user?.admin && current?.status === "draft" && !archived;
+  const dirty = editable && (source !== savedSource || sampleData !== savedSampleData);
   const candidate = selectedTemplate?.versions.find((version) => version.status === "draft" || version.status === "approved");
   const contractDiagnostics = contract?.diagnostics ?? [];
   const contractBlocked = contractDiagnostics.some((diagnostic) => diagnostic.severity === "error");
+  const approvalBlockedReason = contractBusy ? "Contract analysis is still running" : contractBlocked ? contractDiagnostics.filter((diagnostic) => diagnostic.severity === "error").map((diagnostic) => diagnostic.message).join("; ") : "";
+  const visibleTemplates = showArchived ? templates : templates.filter((template) => !template.archivedAt);
 
   function selectVersion(next: { slug: string; version: number }) {
     if (dirty && !window.confirm("Discard unsaved changes and open another version?")) return;
@@ -405,7 +476,7 @@ function App() {
 				if (contractRequest.current !== controller) return;
 				setContract({ ...analysis, diagnostics: analysis.diagnostics ?? [] });
 				const merged = JSON.stringify(analysis.sampleData, null, 2);
-				if (merged !== sampleData) setSampleData(merged);
+				if (canonicalJSON(merged) !== canonicalJSON(sampleData)) setSampleData(merged);
 			}).catch((error: Error) => {
 				if (error.name !== "AbortError" && contractRequest.current === controller) setMessage(error.message);
 			}).finally(() => {
@@ -455,11 +526,11 @@ function App() {
       </header>
 
       {area === "templates" ? <><aside className="sidebar">
-        <div className="sidebar-heading"><span>Templates</span>{user.admin && <button onClick={() => setNewOpen(true)}>+</button>}</div>
+        <div className="sidebar-heading"><span>Templates</span><div className="sidebar-actions"><button className={showArchived ? "archive-filter active" : "archive-filter"} onClick={() => setShowArchived(!showArchived)} title="Show archived templates">Archive</button>{user.admin && <button onClick={() => setNewOpen(true)} title="Create template">+</button>}</div></div>
         <div className="template-list">
-          {templates.map((template) => (
-            <section className="template-group" key={template.slug}>
-              <div className="template-name">{template.name}</div>
+          {visibleTemplates.map((template) => (
+            <section className={template.archivedAt ? "template-group archived" : "template-group"} key={template.slug}>
+              <div className="template-name">{template.name}{template.archivedAt && <span className="archive-badge">Archived</span>}</div>
               <div className="template-slug">{template.slug}</div>
               <div className="version-list">
                 {template.versions.map((version) => (
@@ -484,19 +555,22 @@ function App() {
             <h1>{current?.name ?? "Template Manager"} {current && <span>v{current.version}</span>}</h1>
           </div>
           <div className="document-actions">
-            {user.admin && current?.status === "published" && <button className="primary" onClick={openOrCreateDraft} disabled={!!busy}>{candidate ? `Open ${candidate.status} v${candidate.version}` : "Create editable draft"}</button>}
+            {user.admin && current && !archived && <button className="secondary danger" onClick={() => setTemplateArchived(true)} disabled={!!busy}>Archive template</button>}
+            {user.admin && current && archived && <button className="primary" onClick={() => setTemplateArchived(false)} disabled={!!busy}>Restore template</button>}
+            {user.admin && !archived && current?.status === "published" && <button className="primary" onClick={openOrCreateDraft} disabled={!!busy}>{candidate ? `Open ${candidate.status} v${candidate.version}` : "Create editable draft"}</button>}
             <button className="secondary" onClick={() => preview()} disabled={!current || !!busy}>Compile preview</button>
             {editable && <button className="secondary danger" onClick={discardDraft} disabled={!!busy}>Discard</button>}
             {editable && <button className="primary" onClick={save} disabled={!!busy || !dirty}>Save draft</button>}
-            {editable && <button className="approve" onClick={() => transition("approve")} disabled={!!busy || dirty || contractBusy || contractBlocked}>Approve</button>}
-            {user.admin && current?.status === "approved" && <button className="publish" onClick={() => transition("publish")} disabled={!!busy}>Publish</button>}
+            {editable && <button className="approve" title={approvalBlockedReason} onClick={approveDraft} disabled={!!busy || contractBusy || contractBlocked}>{dirty ? "Save & approve" : "Approve"}</button>}
+            {user.admin && !archived && current?.status === "approved" && <button className="publish" onClick={() => transition("publish")} disabled={!!busy}>Publish</button>}
           </div>
         </div>
 
-        <div className={`workflow-strip ${current?.status ?? "empty"}`}>
-          {current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? contractDiagnostics.map((diagnostic) => diagnostic.message).join("; ") : dirty ? "Unsaved changes" : "All changes saved"}</span></>}
-          {current?.status === "approved" && <><strong>Approved v{current.version}</strong><span>This version is locked and ready to publish.</span></>}
-          {current?.status === "published" && <><strong>Published versions are immutable</strong><span>{user.admin ? (candidate ? `Continue with ${candidate.status} v${candidate.version} to make changes.` : "Create a draft to begin editing.") : "You have read-only access."}</span></>}
+        <div className={`workflow-strip ${archived ? "archived" : current?.status ?? "empty"}`}>
+          {archived && current && <><strong>Template archived</strong><span>Hidden from discovery; pinned integrations and existing reports remain available.</span></>}
+          {!archived && current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? contractDiagnostics.map((diagnostic) => diagnostic.message).join("; ") : dirty ? "Unsaved changes - Save & approve is available" : "Saved and ready for approval"}</span></>}
+          {!archived && current?.status === "approved" && <><strong>Approved v{current.version}</strong><span>This version is locked and ready to publish.</span></>}
+          {!archived && current?.status === "published" && <><strong>Published versions are immutable</strong><span>{user.admin ? (candidate ? `Continue with ${candidate.status} v${candidate.version} to make changes.` : "Create a draft to begin editing.") : "You have read-only access."}</span></>}
           {!current && <><strong>Select a template</strong><span>Choose a version or create a new report template.</span></>}
           <div className="view-switcher" aria-label="Workspace view">
 			{contract?.schemaHash && <code className="contract-hash" title={contract.schemaHash}>contract {contract.schemaHash.slice(0, 12)}</code>}
@@ -752,8 +826,9 @@ X-Content-SHA256: <pdf-sha256>`}</CodeSample>
 
       <DocSection id="docs-templates" label="Authoring" title="Template lifecycle and contracts">
         <div className="lifecycle"><span>draft</span><b>-&gt;</b><span>approved</span><b>-&gt;</b><span>published</span></div>
-        <p>Drafts contain editable Typst source and sample JSON. Contract analysis infers explicit data access, merges missing sample fields, and produces a deterministic schema hash. Approval validates the sample and compiles the template. Approved versions are locked; publication stores the immutable artifact for workers.</p>
+        <p>Drafts contain editable Typst source and sample JSON. Contract analysis infers explicit data access, merges missing sample fields, and produces a deterministic schema hash. Save & approve persists pending changes, validates the sample, and compiles the template. Approved versions are locked; publication stores the immutable artifact for workers.</p>
         <p>Templates load report input from either <code>json("report.json")</code> or <code>json("data.json")</code>. Analysis supports dotted paths, aliases, loop aliases, and literal <code>.at("field", default: ...)</code>. Dynamic rooted lookup and unsupported metaprogramming must be rewritten into explicit access before approval.</p>
+        <p className="docs-note">Archiving hides a template from machine discovery and the default editor list without deleting it. Existing reports, downloads, storage placements, retries, and explicitly version-pinned submissions continue to function. Restore the template to make it discoverable again.</p>
       </DocSection>
 
       <DocSection id="docs-operations" label="Administrator" title="Report operations">

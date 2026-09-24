@@ -18,10 +18,12 @@ var (
 )
 
 type Template struct {
-	Slug      string           `json:"slug"`
-	Name      string           `json:"name"`
-	CreatedAt time.Time        `json:"createdAt"`
-	Versions  []VersionSummary `json:"versions"`
+	Slug       string           `json:"slug"`
+	Name       string           `json:"name"`
+	CreatedAt  time.Time        `json:"createdAt"`
+	ArchivedAt *time.Time       `json:"archivedAt,omitempty"`
+	ArchivedBy *string          `json:"archivedBy,omitempty"`
+	Versions   []VersionSummary `json:"versions"`
 }
 
 type VersionSummary struct {
@@ -76,7 +78,8 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 
 func (r *Repository) List(ctx context.Context) ([]Template, error) {
 	const query = `
-		SELECT t.slug, t.name, t.created_at, tv.version, tv.status, tv.created_at, tv.approved_at, tv.published_at
+		SELECT t.slug, t.name, t.created_at, t.archived_at, t.archived_by,
+		       tv.version, tv.status, tv.created_at, tv.approved_at, tv.published_at
 		FROM templates t
 		LEFT JOIN template_versions tv ON tv.template_id = t.id
 		ORDER BY t.name, t.slug, tv.version DESC`
@@ -91,14 +94,16 @@ func (r *Repository) List(ctx context.Context) ([]Template, error) {
 	for rows.Next() {
 		var slug, name string
 		var templateCreated time.Time
+		var archivedAt *time.Time
+		var archivedBy *string
 		var version *int
 		var status *string
 		var versionCreated, approvedAt, publishedAt *time.Time
-		if err := rows.Scan(&slug, &name, &templateCreated, &version, &status, &versionCreated, &approvedAt, &publishedAt); err != nil {
+		if err := rows.Scan(&slug, &name, &templateCreated, &archivedAt, &archivedBy, &version, &status, &versionCreated, &approvedAt, &publishedAt); err != nil {
 			return nil, fmt.Errorf("scan template: %w", err)
 		}
 		if current == nil || current.Slug != slug {
-			result = append(result, Template{Slug: slug, Name: name, CreatedAt: templateCreated, Versions: []VersionSummary{}})
+			result = append(result, Template{Slug: slug, Name: name, CreatedAt: templateCreated, ArchivedAt: archivedAt, ArchivedBy: archivedBy, Versions: []VersionSummary{}})
 			current = &result[len(result)-1]
 		}
 		if version != nil {
@@ -112,6 +117,26 @@ func (r *Repository) List(ctx context.Context) ([]Template, error) {
 		return nil, fmt.Errorf("list templates: %w", err)
 	}
 	return result, nil
+}
+
+func (r *Repository) SetArchived(ctx context.Context, slug, actor string, archived bool) error {
+	var command string
+	var args []any
+	if archived {
+		command = `UPDATE templates SET archived_at = COALESCE(archived_at, now()), archived_by = CASE WHEN archived_at IS NULL THEN NULLIF($2, '') ELSE archived_by END WHERE slug = $1`
+		args = []any{slug, actor}
+	} else {
+		command = `UPDATE templates SET archived_at = NULL, archived_by = NULL WHERE slug = $1`
+		args = []any{slug}
+	}
+	tag, err := r.pool.Exec(ctx, command, args...)
+	if err != nil {
+		return fmt.Errorf("set template archive state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repository) GetVersion(ctx context.Context, slug string, version int) (Version, error) {
@@ -257,7 +282,7 @@ func (r *Repository) PublishedCatalog(ctx context.Context) ([]PublishedCatalogTe
 	const query = `
 		SELECT t.slug, t.name, tv.version, tv.published_at, tv.data_schema, tv.schema_sha256
 		FROM templates t JOIN template_versions tv ON tv.template_id = t.id
-		WHERE tv.status = 'published'
+		WHERE tv.status = 'published' AND t.archived_at IS NULL
 		ORDER BY t.name, t.slug, tv.version DESC`
 	rows, err := r.pool.Query(ctx, query)
 	if err != nil {

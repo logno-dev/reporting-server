@@ -72,6 +72,27 @@ func (a *API) createTemplate(response http.ResponseWriter, request *http.Request
 	writeJSON(response, http.StatusCreated, result)
 }
 
+func (a *API) archiveTemplate(response http.ResponseWriter, request *http.Request) {
+	a.setTemplateArchived(response, request, true)
+}
+
+func (a *API) restoreTemplate(response http.ResponseWriter, request *http.Request) {
+	a.setTemplateArchived(response, request, false)
+}
+
+func (a *API) setTemplateArchived(response http.ResponseWriter, request *http.Request, archived bool) {
+	err := a.templates.SetArchived(request.Context(), request.PathValue("slug"), actor(request), archived)
+	if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template was not found")
+		return
+	}
+	if err != nil {
+		templateInternalError(response, "set template archive state", err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) getTemplateVersion(response http.ResponseWriter, request *http.Request) {
 	version, ok := pathVersion(response, request)
 	if !ok {

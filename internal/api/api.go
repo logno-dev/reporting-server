@@ -62,6 +62,8 @@ func New(reports *jobs.Repository, templateRepository *templates.Repository, que
 	mux.Handle("GET /v1/report-templates", authenticator.AllowServiceOrUser(apiclients.ScopeTemplatesRead, http.HandlerFunc(api.listPublishedTemplates)))
 	mux.Handle("GET /v1/templates", authenticator.RequireUser(http.HandlerFunc(api.listTemplates)))
 	mux.Handle("POST /v1/templates", authenticator.RequireAdmin(http.HandlerFunc(api.createTemplate)))
+	mux.Handle("POST /v1/templates/{slug}/archive", authenticator.RequireAdmin(http.HandlerFunc(api.archiveTemplate)))
+	mux.Handle("POST /v1/templates/{slug}/restore", authenticator.RequireAdmin(http.HandlerFunc(api.restoreTemplate)))
 	mux.Handle("POST /v1/templates/preview", authenticator.RequireUser(http.HandlerFunc(api.previewTemplate)))
 	mux.Handle("POST /v1/templates/analyze", authenticator.RequireUser(http.HandlerFunc(api.analyzeTemplate)))
 	mux.Handle("GET /v1/templates/{slug}/versions/{version}", authenticator.RequireUser(http.HandlerFunc(api.getTemplateVersion)))

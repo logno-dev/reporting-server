@@ -57,7 +57,7 @@ Pinning both `version` and `schemaHash` is recommended for production integratio
 
 ### Discover report contracts
 
-`GET /v1/report-templates` requires `templates:read` and returns only immutable published versions. Typst source, sample data, drafts, and editor metadata are not exposed.
+`GET /v1/report-templates` requires `templates:read` and returns only immutable published versions from active templates. Typst source, sample data, drafts, archived templates, and editor metadata are not exposed. Archiving is a discoverability control rather than deletion: existing reports and explicitly version-pinned submissions continue to work.
 
 ```sh
 curl --fail-with-body \
@@ -323,7 +323,9 @@ Open `http://localhost:8080` to use the embedded template workbench. It includes
 - Draft approval and immutable publishing
 - Debounced contract analysis that adds missing fake-data fields, displays diagnostics and a schema hash, and blocks unsafe approval
 
-The lifecycle is `draft -> approved -> published`. Published history opens read-only; use **Create editable draft** or **Open draft** to make changes. Approved versions are locked, and published versions cannot be modified by the application or directly in Postgres.
+The lifecycle is `draft -> approved -> published`. **Save & approve** persists pending changes and advances a valid draft in one action; approval compiles and locks the version before publication. Published history opens read-only; use **Create editable draft** or **Open draft** to make changes. Approved versions are locked, and published versions cannot be modified by the application or directly in Postgres.
+
+Administrators can archive and restore an entire template. Archived templates are hidden from the published machine catalog and the default editor list, but their immutable versions, existing reports, downloads, explicit version-pinned submissions, retry lineage, and storage placements remain functional.
 
 Administrators also have **Reports**, **Storage**, and **API Clients** workspaces. Reports provides operator filters, immutable metadata and lineage, the append-only attempt timeline, PDF download, failed-report retry, worker/queue health, and guarded stale recovery. API clients own a validated set of machine scopes. Keys snapshot those scopes when issued, so changing a client does not silently expand an existing key; disabling a client invalidates all its keys immediately. Plaintext keys are shown only in the issue or rotation response.
 
