@@ -1,0 +1,7 @@
+.git
+.env
+data
+plan.md
+README.md
+web/template-manager/node_modules
+web/template-manager/*.tsbuildinfo

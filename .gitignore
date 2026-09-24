@@ -1,0 +1,8 @@
+.env
+data/reports/*
+!data/reports/.gitkeep
+report-server
+web/template-manager/node_modules/
+web/template-manager/*.tsbuildinfo
+web/template-manager/vite.config.js
+web/template-manager/vite.config.d.ts

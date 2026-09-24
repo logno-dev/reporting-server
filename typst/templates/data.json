@@ -1,0 +1,16 @@
+{
+  "sample": {
+    "id": "26000123",
+    "description": "Example sample"
+  },
+  "results": [
+    {
+      "test": "APC",
+      "result": "<10"
+    },
+    {
+      "test": "Salmonella",
+      "result": "ND"
+    }
+  ]
+}
