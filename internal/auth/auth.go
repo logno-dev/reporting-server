@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
@@ -193,6 +194,7 @@ func (a *Authenticator) callback(response http.ResponseWriter, request *http.Req
 	}
 	token, err := a.oauth.Exchange(request.Context(), request.URL.Query().Get("code"), oauth2.VerifierOption(state.Verifier))
 	if err != nil {
+		slog.Warn("OIDC authorization code exchange failed", "error", err, "redirect_url", a.oauth.RedirectURL)
 		http.Error(response, "Could not exchange login code", http.StatusUnauthorized)
 		return
 	}
