@@ -655,11 +655,19 @@ function App() {
 
 function DocsArea() {
   const origin = window.location.origin;
+  const integrationAgentPrompt = `Build a production integration with the Typst Report Service at ${origin} in this application.
+
+First inspect the repository and follow its conventions. Use REPORT_API_URL and REPORT_API_KEY from server-side configuration; never expose the key to a browser or logs. Discover GET /v1/report-templates, select and pin a published template version plus schemaHash, and validate payloads against its dataSchema. Submit with POST /v1/reports, persist jobId, poll with bounded exponential backoff until completed or failed, then download and verify the PDF. Treat submission as non-idempotent and retry only network/5xx failures safely. Add focused tests and document the required scopes and configuration.`;
+  const templateAgentPrompt = `Create a Typst report template and representative sample JSON for the requirements I provide after this prompt.
+
+Load input with #let report = json("report.json"). Use explicit dotted field access, loop aliases, and literal .at("field", default: ...) calls; avoid dynamic rooted lookups or metaprogramming. Produce accessible, print-ready A4 output with clear hierarchy and sensible handling of empty or long values. Return two paste-ready blocks: main.typ and report.json. Ensure every accessed field exists in the sample data and explain any assumptions briefly.`;
   return <section className="docs-workspace">
     <aside className="docs-index">
       <div><span>Reference</span><strong>Service handbook</strong></div>
       <nav aria-label="Documentation sections">
         <a href="#docs-overview">Overview</a>
+        <a href="#docs-agent-integration">Agent: app integration</a>
+        <a href="#docs-agent-template">Agent: build templates</a>
         <a href="#docs-auth">Authentication</a>
         <a href="#docs-contracts">Contracts</a>
         <a href="#docs-submit">Submit reports</a>
@@ -688,6 +696,16 @@ function DocsArea() {
           <span><b>05</b> Download</span>
         </div>
       </header>
+
+      <DocSection id="docs-agent-integration" label="Agent brief" title="Build an app integration">
+        <p>Give this prompt to a coding agent working in the application that will request reports. Add the target template and application requirements after the prompt.</p>
+        <AgentPrompt>{integrationAgentPrompt}</AgentPrompt>
+      </DocSection>
+
+      <DocSection id="docs-agent-template" label="Agent brief" title="Build a report template">
+        <p>Give this prompt to an agent, followed by the report's content, branding, and layout requirements. Review and compile the result in the template workbench.</p>
+        <AgentPrompt>{templateAgentPrompt}</AgentPrompt>
+      </DocSection>
 
       <DocSection id="docs-auth" label="Machine access" title="Authentication and scopes">
         <p>An administrator creates a client and issues a key in <strong>API Clients</strong>. The plaintext key is shown once. Send it as a bearer token; <code>X-API-Key</code> remains available for compatibility.</p>
@@ -891,6 +909,24 @@ function Endpoint({ method, path, scope }: { method: string; path: string; scope
 
 function CodeSample({ language = "Request", children }: { language?: string; children: string }) {
   return <div className="code-sample"><div>{language}</div><pre><code>{children}</code></pre></div>;
+}
+
+function AgentPrompt({ children }: { children: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(children);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return <div className="agent-prompt">
+    <header><span>Copy-ready prompt</span><button type="button" onClick={copy}>{copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy to clipboard"}</button></header>
+    <pre><code>{children}</code></pre>
+  </div>;
 }
 
 function Status({ status }: { status: VersionSummary["status"] }) {
