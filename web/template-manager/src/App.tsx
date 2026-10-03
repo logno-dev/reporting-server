@@ -78,6 +78,7 @@ function canonicalJSON(value: string): string {
 function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selection, setSelection] = useState<{ slug: string; version: number } | null>(null);
+  const [selectedSlug, setSelectedSlug] = useState("");
   const [current, setCurrent] = useState<TemplateVersion | null>(null);
   const [source, setSource] = useState("");
   const [sampleData, setSampleData] = useState("{}");
@@ -119,12 +120,16 @@ function App() {
     const items = await request<TemplateSummary[]>("/v1/templates");
     setTemplates(items);
     if (preferred) {
+      setSelectedSlug(preferred.slug);
       setSelection(preferred);
       return;
     }
-    if (!selection) {
+    if (!selection && !selectedSlug) {
       const first = items.find((item) => !item.archivedAt && item.versions.length > 0);
-      if (first) setSelection({ slug: first.slug, version: first.versions[0].version });
+      if (first) {
+        setSelectedSlug(first.slug);
+        setSelection({ slug: first.slug, version: first.versions[0].version });
+      }
     }
   }
 
@@ -153,6 +158,7 @@ function App() {
     request<TemplateVersion>(`/v1/templates/${selection.slug}/versions/${selection.version}`)
       .then((version) => {
         if (!active) return;
+        setSelectedSlug(version.slug);
         setCurrent(version);
         setSource(version.source);
         setSavedSource(version.source);
@@ -257,11 +263,11 @@ function App() {
     }
   }
 
-  async function approveDraft() {
+  async function publishDraft() {
     if (!current || current.status !== "draft") return;
-    setBusy(dirty ? "saving and approving" : "approving");
+    setBusy(dirty ? "saving and publishing" : "publishing");
+    let target = current;
     try {
-      let target = current;
       if (dirty) {
         target = await request<TemplateVersion>(`/v1/templates/${current.slug}/versions/${current.version}`, {
           method: "PUT",
@@ -277,22 +283,31 @@ function App() {
       const approved = await request<TemplateVersion>(`/v1/templates/${target.slug}/versions/${target.version}/approve`, { method: "POST" });
       setCurrent(approved);
       setContract({ sampleData: approved.sampleData, dataSchema: approved.dataSchema, schemaHash: approved.schemaHash, diagnostics: [] });
-      setMessage("Version approved and locked");
-      await refresh({ slug: approved.slug, version: approved.version });
+      target = approved;
+      const published = await request<TemplateVersion>(`/v1/templates/${approved.slug}/versions/${approved.version}/publish`, { method: "POST" });
+      setCurrent(published);
+      setMessage("Version published");
+      await refresh({ slug: published.slug, version: published.version });
     } catch (error) {
+      if (target.status === "approved") {
+        setCurrent(target);
+        await refresh({ slug: target.slug, version: target.version }).catch(() => undefined);
+      }
       setMessage((error as Error).message);
     } finally {
       setBusy("");
     }
   }
 
-  async function createVersion() {
-    if (!current) return;
+  async function createVersion(slug = current?.slug) {
+    if (!slug) return;
     setBusy("creating");
     try {
-      const created = await request<TemplateVersion>(`/v1/templates/${current.slug}/versions`, {
+      const versionSource = current?.slug === slug ? source : starterSource;
+      const versionData = current?.slug === slug ? parsedData() : JSON.parse(starterData);
+      const created = await request<TemplateVersion>(`/v1/templates/${slug}/versions`, {
         method: "POST",
-        body: JSON.stringify({ source, sampleData: parsedData() }),
+        body: JSON.stringify({ source: versionSource, sampleData: versionData }),
       });
       await refresh({ slug: created.slug, version: created.version });
       setMessage(`Draft v${created.version} created`);
@@ -311,6 +326,7 @@ function App() {
       const template = templates.find((item) => item.slug === current.slug);
       const fallback = template?.versions.find((version) => version.status === "published");
       setCurrent(null);
+      setSelectedSlug(current.slug);
       setSelection(fallback ? { slug: current.slug, version: fallback.version } : null);
       await refresh(fallback ? { slug: current.slug, version: fallback.version } : undefined);
       setMessage(`Draft v${current.version} discarded`);
@@ -322,17 +338,17 @@ function App() {
   }
 
   async function setTemplateArchived(archived: boolean) {
-    if (!current) return;
+    if (!selectedTemplate) return;
     const verb = archived ? "Archive" : "Restore";
     const detail = archived
       ? "Pinned integrations and existing reports will continue to work, but this template will be hidden from discovery."
       : "This template will return to the published catalog and the default editor list.";
-    if (!window.confirm(`${verb} ${current.name}? ${detail}`)) return;
+    if (!window.confirm(`${verb} ${selectedTemplate.name}? ${detail}`)) return;
     setBusy(archived ? "archiving" : "restoring");
     try {
-      await request<void>(`/v1/templates/${current.slug}/${archived ? "archive" : "restore"}`, { method: "POST" });
+      await request<void>(`/v1/templates/${selectedTemplate.slug}/${archived ? "archive" : "restore"}`, { method: "POST" });
       if (!archived) setShowArchived(false);
-      await refresh({ slug: current.slug, version: current.version });
+      await refresh(current ? { slug: current.slug, version: current.version } : undefined);
       setMessage(archived ? "Template archived" : "Template restored");
     } catch (error) {
       setMessage((error as Error).message);
@@ -346,7 +362,7 @@ function App() {
     setUser(null);
   }
 
-  const selectedTemplate = templates.find((template) => template.slug === current?.slug);
+  const selectedTemplate = templates.find((template) => template.slug === selectedSlug);
   const archived = !!selectedTemplate?.archivedAt;
   const editable = !!user?.admin && current?.status === "draft" && !archived;
   const dirty = editable && (source !== savedSource || sampleData !== savedSampleData);
@@ -358,7 +374,29 @@ function App() {
 
   function selectVersion(next: { slug: string; version: number }) {
     if (dirty && !window.confirm("Discard unsaved changes and open another version?")) return;
+    setSelectedSlug(next.slug);
+    if (current?.slug !== next.slug || current.version !== next.version) setCurrent(null);
     setSelection(next);
+  }
+
+  function selectTemplate(template: TemplateSummary) {
+    if (dirty && !window.confirm("Discard unsaved changes and open another template?")) return;
+    setSelectedSlug(template.slug);
+    const next = template.versions[0];
+    if (next) {
+      setCurrent(null);
+      setSelection({ slug: template.slug, version: next.version });
+      return;
+    }
+    setSelection(null);
+    setCurrent(null);
+    setSource("");
+    setSavedSource("");
+    setSampleData("{}");
+    setSavedSampleData("{}");
+    setContract(null);
+    setPreviewURL("");
+    setMessage("");
   }
 
   function openOrCreateDraft() {
@@ -530,8 +568,8 @@ function App() {
         <div className="sidebar-heading"><span>Templates</span><div className="sidebar-actions"><button className={showArchived ? "archive-filter active" : "archive-filter"} onClick={() => setShowArchived(!showArchived)} title="Show archived templates">Archive</button>{user.admin && <button onClick={() => setNewOpen(true)} title="Create template">+</button>}</div></div>
         <div className="template-list">
           {visibleTemplates.map((template) => (
-            <section className={template.archivedAt ? "template-group archived" : "template-group"} key={template.slug}>
-              <div className="template-name">{template.name}{template.archivedAt && <span className="archive-badge">Archived</span>}</div>
+            <section className={`template-group${template.archivedAt ? " archived" : ""}${selectedSlug === template.slug ? " selected" : ""}`} key={template.slug}>
+              <button className="template-name" onClick={() => selectTemplate(template)}>{template.name}{template.archivedAt && <span className="archive-badge">Archived</span>}</button>
               <div className="template-slug">{template.slug}</div>
               <div className="version-list">
                 {template.versions.map((version) => (
@@ -543,6 +581,7 @@ function App() {
                     <span>v{version.version}</span><Status status={version.status} />
                   </button>
                 ))}
+                {template.versions.length === 0 && <span className="empty-versions">No versions</span>}
               </div>
             </section>
           ))}
@@ -552,27 +591,29 @@ function App() {
       <section className="workspace">
         <div className="document-bar">
           <div>
-            <div className="eyebrow">{current?.slug ?? "No template selected"}</div>
-            <h1>{current?.name ?? "Template Manager"} {current && <span>v{current.version}</span>}</h1>
+            <div className="eyebrow">{selectedTemplate?.slug ?? "No template selected"}</div>
+            <h1>{selectedTemplate?.name ?? "Template Manager"} {current && <span>v{current.version}</span>}</h1>
           </div>
           <div className="document-actions">
-            {user.admin && current && !archived && <button className="secondary danger" onClick={() => setTemplateArchived(true)} disabled={!!busy}>Archive template</button>}
-            {user.admin && current && archived && <button className="primary" onClick={() => setTemplateArchived(false)} disabled={!!busy}>Restore template</button>}
+            {user.admin && selectedTemplate && !archived && <button className="secondary danger" onClick={() => setTemplateArchived(true)} disabled={!!busy}>Archive template</button>}
+            {user.admin && selectedTemplate && archived && <button className="primary" onClick={() => setTemplateArchived(false)} disabled={!!busy}>Restore template</button>}
+            {user.admin && selectedTemplate && !archived && selectedTemplate.versions.length === 0 && <button className="primary" onClick={() => createVersion(selectedTemplate.slug)} disabled={!!busy}>Create new draft</button>}
             {user.admin && !archived && current?.status === "published" && <button className="primary" onClick={openOrCreateDraft} disabled={!!busy}>{candidate ? `Open ${candidate.status} v${candidate.version}` : "Create editable draft"}</button>}
             <button className="secondary" onClick={() => preview()} disabled={!current || !!busy}>Compile preview</button>
             {editable && <button className="secondary danger" onClick={discardDraft} disabled={!!busy}>Discard</button>}
             {editable && <button className="primary" onClick={save} disabled={!!busy || !dirty}>Save draft</button>}
-            {editable && <button className="approve" title={approvalBlockedReason} onClick={approveDraft} disabled={!!busy || contractBusy || contractBlocked}>{dirty ? "Save & approve" : "Approve"}</button>}
+            {editable && <button className="publish" title={approvalBlockedReason} onClick={publishDraft} disabled={!!busy || contractBusy || contractBlocked}>{dirty ? "Save & publish" : "Publish draft"}</button>}
             {user.admin && !archived && current?.status === "approved" && <button className="publish" onClick={() => transition("publish")} disabled={!!busy}>Publish</button>}
           </div>
         </div>
 
         <div className={`workflow-strip ${archived ? "archived" : current?.status ?? "empty"}`}>
           {archived && current && <><strong>Template archived</strong><span>Hidden from discovery; pinned integrations and existing reports remain available.</span></>}
-          {!archived && current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? contractDiagnostics.map((diagnostic) => diagnostic.message).join("; ") : dirty ? "Unsaved changes - Save & approve is available" : "Saved and ready for approval"}</span></>}
+          {!archived && current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? contractDiagnostics.map((diagnostic) => diagnostic.message).join("; ") : dirty ? "Unsaved changes - Save & publish will validate and compile" : "Saved and ready to publish"}</span></>}
           {!archived && current?.status === "approved" && <><strong>Approved v{current.version}</strong><span>This version is locked and ready to publish.</span></>}
           {!archived && current?.status === "published" && <><strong>Published versions are immutable</strong><span>{user.admin ? (candidate ? `Continue with ${candidate.status} v${candidate.version} to make changes.` : "Create a draft to begin editing.") : "You have read-only access."}</span></>}
-          {!current && <><strong>Select a template</strong><span>Choose a version or create a new report template.</span></>}
+          {!current && selectedTemplate && <><strong>No versions</strong><span>{user.admin ? "Create a new draft or archive this template." : "This template does not have a version to view."}</span></>}
+          {!current && !selectedTemplate && <><strong>Select a template</strong><span>Choose a version or create a new report template.</span></>}
           <div className="view-switcher" aria-label="Workspace view">
 			{contract?.schemaHash && <code className="contract-hash" title={contract.schemaHash}>contract {contract.schemaHash.slice(0, 12)}</code>}
             <button className={activePane === "source" ? "active" : ""} onClick={() => setActivePane("source")}>Source</button>
@@ -655,12 +696,68 @@ function App() {
 
 function DocsArea() {
   const origin = window.location.origin;
-  const integrationAgentPrompt = `Build a production integration with the Typst Report Service at ${origin} in this application.
+  const integrationAgentPrompt = `Build a production integration with the Typst Report Service at ${origin} in this application. First inspect the repository and follow its conventions.
 
-First inspect the repository and follow its conventions. Use REPORT_API_URL and REPORT_API_KEY from server-side configuration; never expose the key to a browser or logs. Discover GET /v1/report-templates, select and pin a published template version plus schemaHash, and validate payloads against its dataSchema. Submit with POST /v1/reports, persist jobId, poll with bounded exponential backoff until completed or failed, then download and verify the PDF. Treat submission as non-idempotent and retry only network/5xx failures safely. Add focused tests and document the required scopes and configuration.`;
-  const templateAgentPrompt = `Create a Typst report template and representative sample JSON for the requirements I provide after this prompt.
+Authentication
+- Read REPORT_API_URL and REPORT_API_KEY from server-side configuration. Never expose the key to browsers, source control, URLs, or logs.
+- Send Authorization: Bearer <key>. The full workflow needs templates:read, reports:submit, reports:read, and reports:download.
 
-Load input with #let report = json("report.json"). Use explicit dotted field access, loop aliases, and literal .at("field", default: ...) calls; avoid dynamic rooted lookups or metaprogramming. Produce accessible, print-ready A4 output with clear hierarchy and sensible handling of empty or long values. Return two paste-ready blocks: main.typ and report.json. Ensure every accessed field exists in the sample data and explain any assumptions briefly.`;
+1. Discover and pin a contract
+GET /v1/report-templates
+Response 200:
+{"items":[{"slug":"certificate-of-analysis","name":"Certificate of Analysis","latestVersion":2,"versions":[{"version":2,"publishedAt":"<RFC3339>","dataSchema":{"type":"object"},"schemaHash":"<sha256>"}]}]}
+Select a published template and numeric version. Persist its schemaHash and validate outgoing data against dataSchema.
+
+2. Submit a report
+POST /v1/reports
+Content-Type: application/json
+Request:
+{"template":"certificate-of-analysis","version":2,"schemaHash":"<catalog hash>","data":{"sample":{"id":"26000123"}}}
+Response 202:
+{"jobId":"<ULID>","status":"queued","template":"certificate-of-analysis","templateVersion":2,"schemaHash":"<resolved hash>"}
+Persist jobId immediately. Every successful POST creates a new job; there is no submission idempotency, so do not blindly retry an ambiguous request.
+
+3. Poll status
+GET /v1/reports/{jobId}
+Poll with bounded exponential backoff until status is completed or failed. queued and processing are non-terminal, and processing can return to queued. A completed response includes downloadUrl, sha256, schemaHash, attempts, and timestamps. A failed response can include error.
+
+4. Download
+GET {downloadUrl}
+Download only after completion. Save the PDF using Content-Disposition and, where practical, verify the body against X-Content-SHA256 or the job's sha256. HEAD is supported for metadata checks.
+
+Errors and delivery rules
+- Errors use {"error":{"code":"...","message":"...","details":[]}}. Branch on HTTP status and error.code, not message text.
+- Refresh the catalog on 409 template_contract_changed. Treat 409 report_not_ready as non-terminal. Correct 4xx authentication, scope, validation, and contract errors before retrying.
+- Retry network failures and 5xx responses with bounded backoff. Reconcile uncertain submissions before creating another job when duplicates matter.
+- Keep service calls server-side, use existing HTTP/logging/error patterns, add focused tests for success, terminal failure, timeout, malformed responses, and retry behavior, and document configuration and scopes.`;
+  const templateAgentPrompt = `Create a production-ready Typst report template and representative sample JSON for the requirements I provide after this prompt.
+
+Deliverables
+- Return exactly two paste-ready fenced blocks named main.typ and report.json, followed by a short assumptions list.
+- main.typ must compile as a standalone template in the report workbench.
+- report.json must be valid representative JSON and contain every field accessed by main.typ.
+
+Data contract
+- Begin with #let report = json("report.json"). The service also mounts data.json, but use one filename consistently.
+- Access data with explicit dotted paths such as report.sample.id.
+- For optional values, use literal lookup such as report.sample.at("description", default: "Not provided").
+- Arrays may use explicit loops and loop aliases. Keep accesses statically discoverable.
+- Do not use computed rooted field names, dynamic .at keys, eval-style behavior, or metaprogramming around report data; contract analysis blocks unsupported dynamic access.
+- Use consistent field types in the sample. Include realistic empty, optional, and repeated values needed to exercise the layout.
+
+Document requirements
+- Produce print-ready A4 output with intentional margins, typography, spacing, page breaks, headers/footers, and clear information hierarchy.
+- Handle long text, empty optional fields, and multi-row tables without overlap or clipping. Repeat table headings where appropriate.
+- Use accessible labels and do not rely on color alone to communicate status.
+- Keep reusable formatting in small Typst functions, but keep data access straightforward and auditable.
+- Do not reference network resources or files other than assets explicitly supplied with the requirements.
+
+Validation
+- Cross-check every report data access against report.json before responding.
+- Avoid invented business fields unless clearly identified in assumptions.
+- Briefly identify fields that are required versus optional and note any layout tradeoffs.
+
+Report requirements follow this prompt:`;
   return <section className="docs-workspace">
     <aside className="docs-index">
       <div><span>Reference</span><strong>Service handbook</strong></div>
