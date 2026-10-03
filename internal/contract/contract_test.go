@@ -80,6 +80,27 @@ func TestOptionalAtAndDynamicDiagnostic(t *testing.T) {
 	}
 }
 
+func TestAnalyzeDistinguishesContentBlocksFromIndexedAccess(t *testing.T) {
+	result, err := Analyze(`#let report = json("report.json")
+#if report.show [Visible] else [Hidden]
+#report.title [content block]`, json.RawMessage(`{"show":true,"title":"Example"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("content blocks must not be treated as indexed access: %#v", result.Diagnostics)
+	}
+
+	result, err = Analyze(`#let report = json("report.json")
+#report.values[index]`, json.RawMessage(`{"values":["example"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Message != "dynamic indexed access rooted in report data cannot be analyzed" {
+		t.Fatalf("expected blocking indexed-access diagnostic: %#v", result.Diagnostics)
+	}
+}
+
 func TestAnalyzePreservesConflictingSampleValueAndRequiresStructure(t *testing.T) {
 	result, err := Analyze(`#let report = json("report.json") #report.sample.id`, json.RawMessage(`{"sample":"user value"}`))
 	if err != nil {

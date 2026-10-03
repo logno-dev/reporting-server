@@ -369,7 +369,15 @@ function App() {
   const candidate = selectedTemplate?.versions.find((version) => version.status === "draft" || version.status === "approved");
   const contractDiagnostics = contract?.diagnostics ?? [];
   const contractBlocked = contractDiagnostics.some((diagnostic) => diagnostic.severity === "error");
-  const approvalBlockedReason = contractBusy ? "Contract analysis is still running" : contractBlocked ? contractDiagnostics.filter((diagnostic) => diagnostic.severity === "error").map((diagnostic) => diagnostic.message).join("; ") : "";
+  const formatDiagnostic = (diagnostic: ContractDiagnostic) => {
+    if (diagnostic.offset === undefined) return diagnostic.message;
+    const before = source.slice(0, diagnostic.offset);
+    const line = before.split("\n").length;
+    const column = diagnostic.offset - before.lastIndexOf("\n");
+    return `${diagnostic.message} (line ${line}, column ${column})`;
+  };
+  const blockingDiagnostics = contractDiagnostics.filter((diagnostic) => diagnostic.severity === "error").map(formatDiagnostic);
+  const approvalBlockedReason = contractBusy ? "Contract analysis is still running" : blockingDiagnostics.join("; ");
   const visibleTemplates = showArchived ? templates : templates.filter((template) => !template.archivedAt);
 
   function selectVersion(next: { slug: string; version: number }) {
@@ -609,7 +617,7 @@ function App() {
 
         <div className={`workflow-strip ${archived ? "archived" : current?.status ?? "empty"}`}>
           {archived && current && <><strong>Template archived</strong><span>Hidden from discovery; pinned integrations and existing reports remain available.</span></>}
-          {!archived && current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? contractDiagnostics.map((diagnostic) => diagnostic.message).join("; ") : dirty ? "Unsaved changes - Save & publish will validate and compile" : "Saved and ready to publish"}</span></>}
+          {!archived && current?.status === "draft" && <><strong>Editing draft v{current.version}</strong><span>{contractBusy ? "Analyzing contract..." : contractBlocked ? blockingDiagnostics.join("; ") : dirty ? "Unsaved changes - Save & publish will validate and compile" : "Saved and ready to publish"}</span></>}
           {!archived && current?.status === "approved" && <><strong>Approved v{current.version}</strong><span>This version is locked and ready to publish.</span></>}
           {!archived && current?.status === "published" && <><strong>Published versions are immutable</strong><span>{user.admin ? (candidate ? `Continue with ${candidate.status} v${candidate.version} to make changes.` : "Create a draft to begin editing.") : "You have read-only access."}</span></>}
           {!current && selectedTemplate && <><strong>No versions</strong><span>{user.admin ? "Create a new draft or archive this template." : "This template does not have a version to view."}</span></>}

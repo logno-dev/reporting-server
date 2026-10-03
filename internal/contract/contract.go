@@ -313,7 +313,9 @@ func parseAccess(tokens []token, start int, base alias) (pathInfo, int, []Diagno
 			i += 2
 			continue
 		}
-		if tokens[i+1].text == "[" {
+		// Typst content blocks commonly follow expressions with whitespace, as in
+		// `if report.visible [content]`. Only an adjacent bracket is indexing.
+		if tokens[i+1].text == "[" && tokens[i].offset+len(tokens[i].text) == tokens[i+1].offset {
 			diagnostics = append(diagnostics, Diagnostic{Severity: "error", Message: "dynamic indexed access rooted in report data cannot be analyzed", Offset: tokens[i+1].offset})
 		}
 		break
