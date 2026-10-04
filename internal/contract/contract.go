@@ -309,6 +309,13 @@ func parseAccess(tokens []token, start int, base alias) (pathInfo, int, []Diagno
 				i = end - 1
 				continue
 			}
+			// Methods such as .len() and .map(...) operate on the value;
+			// they are not fields in its JSON object. Stop following the
+			// access here because the method result is a derived value.
+			// Literal .at(...) accesses are handled above.
+			if i+3 < len(tokens) && tokens[i+3].text == "(" {
+				break
+			}
 			info.parts = append(info.parts, pathPart{name: field.text})
 			i += 2
 			continue

@@ -150,3 +150,119 @@ func TestDeterministicSchema(t *testing.T) {
 		t.Fatal("schema output is not deterministic")
 	}
 }
+
+func TestInvoiceArrayMethodsDoNotBecomeDataFields(t *testing.T) {
+	source := `#let data = json("data.json")
+#let organization = data.at("organization")
+#let family = data.at("family")
+#let session = data.at("session")
+#let amounts = data.at("amounts")
+
+#set page(paper: "us-letter", margin: 0.7in)
+#set text(font: "Libertinus Serif", size: 10pt, fill: rgb("243044"))
+#set par(leading: 0.65em)
+
+#align(right)[
+  #text(size: 19pt, weight: "bold", fill: rgb("174f3a"))[#data.at("title")]
+  #v(4pt)
+  Issued #data.at("issueDate")
+]
+
+#text(size: 16pt, weight: "bold")[#organization.at("name")]
+#if organization.at("address") != "" [#linebreak()#organization.at("address")]
+#if organization.at("contact") != "" [#linebreak()#organization.at("contact")]
+
+#v(18pt)
+#box(fill: rgb("f3f6fa"), inset: 12pt, radius: 4pt, width: 100%)[
+  *Bill to* #h(1fr) *Session*#linebreak()
+  #family.at("name") #h(1fr) #session.at("name")
+  #if family.at("guardians") != "" [#linebreak()#family.at("guardians")]
+]
+
+#v(18pt)
+#let items = data.at("lineItems", default: ())
+#if items.len() > 0 {
+  table(
+    columns: (1fr, auto), inset: 9pt,
+    stroke: (x: none, y: 0.5pt + rgb("d9e0e8")),
+    table.header([*Description*], [*Amount*]),
+    ..items.map(item => (item.at("description"), align(right)[#item.at("amount")])).flatten(),
+  )
+  v(12pt)
+}
+#table(
+  columns: (1fr, auto),
+  inset: 9pt,
+  stroke: (x: none, y: 0.5pt + rgb("d9e0e8")),
+  [Total charges], align(right)[#amounts.at("total")],
+  [Amount paid], align(right)[#amounts.at("paid")],
+  text(weight: "bold")[Balance due], align(right)[#text(weight: "bold", fill: rgb("174f3a"))[#amounts.at("balance")]],
+)
+
+#if data.at("dueDate") != "" [#v(12pt)*Due date:* #data.at("dueDate")]
+#if data.at("footer") != "" [#v(24pt)#box(stroke: 0.5pt + rgb("d9e0e8"), inset: 10pt, width: 100%)[#data.at("footer")]]`
+	sample := json.RawMessage(`{
+  "title": "DVCLC Invoice",
+  "issueDate": "9/24/2026",
+  "organization": { "name": "DVCLC", "address": "123 Main Street, Palm Desert, CA 92260", "contact": "office@example.com | example.com" },
+  "family": { "name": "Rivera Family", "guardians": "Alex Rivera, Jordan Rivera" },
+  "session": { "name": "Fall 2026" },
+  "lineItems": [
+    { "description": "Session registration fee — 2 children; 2-child family rate", "amount": "$200.00" },
+    { "description": "Sam — Art Studio", "amount": "$30.00" },
+    { "description": "Taylor — Science Lab", "amount": "$20.00" }
+  ],
+  "amounts": { "total": "$250.00", "paid": "$0.00", "balance": "$250.00" },
+  "dueDate": "10/15/2026",
+  "footer": "Payment is due by the date shown above."
+}`)
+	result, err := Analyze(source, sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %#v", result.Diagnostics)
+	}
+	errors, err := Validate(result.DataSchema, sample)
+	if err != nil || len(errors) != 0 {
+		t.Fatalf("invoice data must satisfy its contract: %v %#v", err, errors)
+	}
+	var original any
+	if err := json.Unmarshal(sample, &original); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != string(result.SampleData) {
+		t.Fatalf("analysis changed invoice data: %s", result.SampleData)
+	}
+}
+
+func TestAnalyzeDistinguishesMethodsFromFields(t *testing.T) {
+	result, err := Analyze(`#let data = json("data.json")
+#data.items.len()
+#data.items.map(item => item).flatten()
+#data.title.upper()
+#data.metadata.len
+#data.metadata.at("map")`, json.RawMessage(`{"items":["one","two"],"title":"Invoice","metadata":{"len":2,"map":"kept"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationErrors, err := Validate(result.DataSchema, result.SampleData)
+	if err != nil || len(validationErrors) != 0 {
+		t.Fatalf("methods must not require object fields: %v %#v", err, validationErrors)
+	}
+	validationErrors, err = Validate(result.DataSchema, json.RawMessage(`{"items":["one"],"title":"Invoice","metadata":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]bool{}
+	for _, validationError := range validationErrors {
+		paths[validationError.Path] = true
+	}
+	if len(validationErrors) != 2 || !paths["$.metadata.len"] || !paths["$.metadata.map"] {
+		t.Fatalf("real fields named len and map must still be required: %#v", validationErrors)
+	}
+}
