@@ -60,21 +60,6 @@ const starterData = `{
   }
 }`;
 
-function canonicalJSON(value: string): string {
-  function sort(input: unknown): unknown {
-    if (Array.isArray(input)) return input.map(sort);
-    if (input && typeof input === "object") {
-      return Object.fromEntries(Object.entries(input).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, sort(item)]));
-    }
-    return input;
-  }
-  try {
-    return JSON.stringify(sort(JSON.parse(value)));
-  } catch {
-    return value;
-  }
-}
-
 function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selection, setSelection] = useState<{ slug: string; version: number } | null>(null);
@@ -102,6 +87,10 @@ function App() {
   const [area, setArea] = useState<"templates" | "reports" | "storage" | "clients" | "docs">("templates");
   const previewRequest = useRef<AbortController | null>(null);
 	const contractRequest = useRef<AbortController | null>(null);
+  const draftWrite = useRef(false);
+  const activeSelection = useRef(selection);
+  activeSelection.current = selection;
+  const [publishing, setPublishing] = useState(false);
 
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers);
@@ -109,8 +98,11 @@ function App() {
     const response = await fetch(path, { ...options, headers });
     if (!response.ok) {
       if (response.status === 401) setUser(null);
-      const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-      throw new Error(body?.error?.message ?? `${response.status} ${response.statusText}`);
+      const body = await response.json().catch(() => null) as { error?: { message?: string; details?: { path?: string; message?: string }[] } } | null;
+      const details = Array.isArray(body?.error?.details)
+        ? body.error.details.filter((detail) => detail.message).map((detail) => `${detail.path ? `${detail.path}: ` : ""}${detail.message}`).join("; ")
+        : "";
+      throw new Error([body?.error?.message ?? `${response.status} ${response.statusText}`, details].filter(Boolean).join(": "));
     }
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
@@ -184,25 +176,28 @@ function App() {
   }
 
   async function save() {
-    if (!current) return;
+    if (!current || draftWrite.current) return;
+    draftWrite.current = true;
     setBusy("saving");
     try {
       const updated = await request<TemplateVersion>(`/v1/templates/${current.slug}/versions/${current.version}`, {
         method: "PUT",
         body: JSON.stringify({ source, sampleData: parsedData() }),
       });
+      if (activeSelection.current?.slug !== updated.slug || activeSelection.current.version !== updated.version) return;
       setCurrent(updated);
       const formattedData = JSON.stringify(updated.sampleData, null, 2);
-      setSource(updated.source);
-      setSampleData(formattedData);
+      // A save acknowledges its submitted snapshot, not edits made while it was in flight.
+      setSource((latest) => latest === source ? updated.source : latest);
+      setSampleData((latest) => latest === sampleData ? formattedData : latest);
       setSavedSource(updated.source);
       setSavedSampleData(formattedData);
-		setContract({ sampleData: updated.sampleData, dataSchema: updated.dataSchema, schemaHash: updated.schemaHash, diagnostics: [] });
       setMessage("Draft saved");
-      await refresh({ slug: updated.slug, version: updated.version });
+      await refresh();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
+      draftWrite.current = false;
       setBusy("");
     }
   }
@@ -264,7 +259,9 @@ function App() {
   }
 
   async function publishDraft() {
-    if (!current || current.status !== "draft") return;
+    if (!current || current.status !== "draft" || draftWrite.current) return;
+    draftWrite.current = true;
+    setPublishing(true);
     setBusy(dirty ? "saving and publishing" : "publishing");
     let target = current;
     try {
@@ -295,6 +292,8 @@ function App() {
       }
       setMessage((error as Error).message);
     } finally {
+      draftWrite.current = false;
+      setPublishing(false);
       setBusy("");
     }
   }
@@ -522,8 +521,6 @@ function App() {
 			}).then((analysis) => {
 				if (contractRequest.current !== controller) return;
 				setContract({ ...analysis, diagnostics: analysis.diagnostics ?? [] });
-				const merged = JSON.stringify(analysis.sampleData, null, 2);
-				if (canonicalJSON(merged) !== canonicalJSON(sampleData)) setSampleData(merged);
 			}).catch((error: Error) => {
 				if (error.name !== "AbortError" && contractRequest.current === controller) setMessage(error.message);
 			}).finally(() => {
@@ -633,7 +630,7 @@ function App() {
         <div className={`work-grid show-${activePane}`} style={{ "--split-size": `${splitSize}%` } as React.CSSProperties}>
           <section className="editor-pane">
             <div className="pane-label"><span>Typst source</span><span>{editable ? (dirty ? "Modified" : "Editable draft") : "Read only"}</span></div>
-            <CodeMirror value={source} onChange={setSource} editable={editable} height="100%" theme="dark" extensions={[EditorView.lineWrapping]} basicSetup={{ lineNumbers: true, foldGutter: false }} />
+            <CodeMirror value={source} onChange={setSource} editable={editable && !publishing} height="100%" theme="dark" extensions={[EditorView.lineWrapping]} basicSetup={{ lineNumbers: true, foldGutter: false }} />
           </section>
           <div
             className="split-handle"
@@ -683,7 +680,7 @@ function App() {
             }}
           />}
           <button className="drawer-toggle" onClick={() => setDataOpen(!dataOpen)}><span>Test data <small>report.json / data.json</small></span><span>{dataOpen ? "Hide" : "Show"}</span></button>
-          {dataOpen && <div className="data-editor"><CodeMirror className="data-code-editor" value={sampleData} onChange={setSampleData} editable={editable} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: true }} /></div>}
+          {dataOpen && <div className="data-editor"><CodeMirror className="data-code-editor" value={sampleData} onChange={setSampleData} editable={editable && !publishing} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: true }} /></div>}
         </section>
       </section></> : area === "reports" ? <ReportsArea /> : area === "storage" ? <StorageArea /> : area === "clients" ? <APIClientsArea /> : <DocsArea />}
 
