@@ -38,7 +38,7 @@ func TestRetryLineageAndStaleRecoveryIntegration(t *testing.T) {
 	repository := jobs.NewRepository(pool)
 	parentID := ulid.Make().String()
 	data := json.RawMessage(`{"sample":{"id":"retry-test"}}`)
-	if _, err := repository.Create(ctx, parentID, "certificate-of-analysis", nil, nil, data, "api-client:test"); err != nil {
+	if _, err := repository.Create(ctx, parentID, "certificate-of-analysis", nil, nil, data, "api-client:test", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := repository.Retry(ctx, parentID, ulid.Make().String(), "admin@example.test", "not-failed"); !errors.Is(err, jobs.ErrNotFailed) {

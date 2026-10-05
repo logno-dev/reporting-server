@@ -46,21 +46,22 @@ type Client struct {
 }
 
 type Key struct {
-	ID           string     `json:"id"`
-	ClientID     string     `json:"clientId"`
-	Label        string     `json:"label"`
-	Prefix       string     `json:"prefix"`
-	Scopes       []string   `json:"scopes"`
-	IssuedAt     time.Time  `json:"issuedAt"`
-	IssuedBy     string     `json:"issuedBy"`
-	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
-	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
-	RevokedBy    *string    `json:"revokedBy,omitempty"`
-	LastUsedAt   *time.Time `json:"lastUsedAt,omitempty"`
-	LastUsedIP   *string    `json:"lastUsedIp,omitempty"`
-	ReplacesID   *string    `json:"replacesId,omitempty"`
-	ReplacedByID *string    `json:"replacedById,omitempty"`
-	Status       string     `json:"status"`
+	ID            string     `json:"id"`
+	ClientID      string     `json:"clientId"`
+	Label         string     `json:"label"`
+	Prefix        string     `json:"prefix"`
+	Scopes        []string   `json:"scopes"`
+	TemplateSlugs []string   `json:"templateSlugs"`
+	IssuedAt      time.Time  `json:"issuedAt"`
+	IssuedBy      string     `json:"issuedBy"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	RevokedBy     *string    `json:"revokedBy,omitempty"`
+	LastUsedAt    *time.Time `json:"lastUsedAt,omitempty"`
+	LastUsedIP    *string    `json:"lastUsedIp,omitempty"`
+	ReplacesID    *string    `json:"replacesId,omitempty"`
+	ReplacedByID  *string    `json:"replacedById,omitempty"`
+	Status        string     `json:"status"`
 }
 
 type IssuedKey struct {
@@ -69,10 +70,11 @@ type IssuedKey struct {
 }
 
 type Identity struct {
-	ClientID   string
-	ClientName string
-	KeyID      string
-	Scopes     []string
+	ClientID      string
+	ClientName    string
+	KeyID         string
+	Scopes        []string
+	TemplateSlugs []string
 }
 
 type Service struct {
@@ -187,13 +189,13 @@ func (s *Service) DisableClient(ctx context.Context, id, actor string) error {
 	return tx.Commit(ctx)
 }
 
-func (s *Service) IssueKey(ctx context.Context, clientID, label string, expiresAt *time.Time, actor string) (IssuedKey, error) {
+func (s *Service) IssueKey(ctx context.Context, clientID, label string, expiresAt *time.Time, templateSlugs []string, actor string) (IssuedKey, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return IssuedKey{}, err
 	}
 	defer tx.Rollback(ctx)
-	issued, err := s.issue(ctx, tx, clientID, label, expiresAt, nil, actor)
+	issued, err := s.issue(ctx, tx, clientID, label, expiresAt, templateSlugs, nil, actor)
 	if err != nil {
 		return IssuedKey{}, err
 	}
@@ -203,7 +205,7 @@ func (s *Service) IssueKey(ctx context.Context, clientID, label string, expiresA
 	return issued, nil
 }
 
-func (s *Service) issue(ctx context.Context, tx pgx.Tx, clientID, label string, expiresAt *time.Time, replaces *string, actor string) (IssuedKey, error) {
+func (s *Service) issue(ctx context.Context, tx pgx.Tx, clientID, label string, expiresAt *time.Time, templateSlugs []string, replaces *string, actor string) (IssuedKey, error) {
 	label = strings.TrimSpace(label)
 	if label == "" || len(label) > 120 || (expiresAt != nil && !expiresAt.After(s.now())) {
 		return IssuedKey{}, errors.New("invalid API key")
@@ -220,6 +222,10 @@ func (s *Service) issue(ctx context.Context, tx pgx.Tx, clientID, label string, 
 	if !enabled {
 		return IssuedKey{}, ErrConflict
 	}
+	templateSlugs, err = validateTemplateSlugs(ctx, tx, templateSlugs)
+	if err != nil {
+		return IssuedKey{}, err
+	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return IssuedKey{}, err
@@ -227,8 +233,8 @@ func (s *Service) issue(ctx context.Context, tx pgx.Tx, clientID, label string, 
 	id := ulid.Make().String()
 	plaintext := keyPrefix + id + "_" + base64.RawURLEncoding.EncodeToString(secret)
 	digest := sha256.Sum256(secret)
-	key := Key{ID: id, ClientID: clientID, Label: label, Prefix: keyPrefix + id + "_", Scopes: scopes, IssuedBy: actor, ExpiresAt: expiresAt, ReplacesID: replaces, Status: "active"}
-	err = tx.QueryRow(ctx, `INSERT INTO api_keys(id,client_id,label,prefix,secret_hash,scopes,issued_by,expires_at,replaces_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING issued_at`, id, clientID, label, key.Prefix, digest[:], scopes, actor, expiresAt, replaces).Scan(&key.IssuedAt)
+	key := Key{ID: id, ClientID: clientID, Label: label, Prefix: keyPrefix + id + "_", Scopes: scopes, TemplateSlugs: templateSlugs, IssuedBy: actor, ExpiresAt: expiresAt, ReplacesID: replaces, Status: "active"}
+	err = tx.QueryRow(ctx, `INSERT INTO api_keys(id,client_id,label,prefix,secret_hash,scopes,template_slugs,issued_by,expires_at,replaces_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING issued_at`, id, clientID, label, key.Prefix, digest[:], scopes, templateSlugs, actor, expiresAt, replaces).Scan(&key.IssuedAt)
 	if err != nil {
 		return IssuedKey{}, err
 	}
@@ -238,7 +244,7 @@ func (s *Service) issue(ctx context.Context, tx pgx.Tx, clientID, label string, 
 	return IssuedKey{Key: key, Secret: plaintext}, nil
 }
 
-func (s *Service) RotateKey(ctx context.Context, clientID, keyID, label string, grace time.Duration, actor string) (IssuedKey, error) {
+func (s *Service) RotateKey(ctx context.Context, clientID, keyID, label string, grace time.Duration, templateSlugs *[]string, actor string) (IssuedKey, error) {
 	if grace < 0 || grace > 30*24*time.Hour {
 		return IssuedKey{}, errors.New("invalid rotation grace period")
 	}
@@ -251,7 +257,8 @@ func (s *Service) RotateKey(ctx context.Context, clientID, keyID, label string, 
 	var revoked *time.Time
 	var expires *time.Time
 	var replacedBy *string
-	if err := tx.QueryRow(ctx, `SELECT client_id,revoked_at,expires_at,replaced_by_id FROM api_keys WHERE id=$1 FOR UPDATE`, keyID).Scan(&oldClient, &revoked, &expires, &replacedBy); errors.Is(err, pgx.ErrNoRows) {
+	var oldTemplateSlugs []string
+	if err := tx.QueryRow(ctx, `SELECT client_id,revoked_at,expires_at,replaced_by_id,template_slugs FROM api_keys WHERE id=$1 FOR UPDATE`, keyID).Scan(&oldClient, &revoked, &expires, &replacedBy, &oldTemplateSlugs); errors.Is(err, pgx.ErrNoRows) {
 		return IssuedKey{}, ErrNotFound
 	} else if err != nil {
 		return IssuedKey{}, err
@@ -259,7 +266,11 @@ func (s *Service) RotateKey(ctx context.Context, clientID, keyID, label string, 
 	if oldClient != clientID || revoked != nil || replacedBy != nil || (expires != nil && !expires.After(s.now())) {
 		return IssuedKey{}, ErrConflict
 	}
-	issued, err := s.issue(ctx, tx, clientID, label, nil, &keyID, actor)
+	replacementTemplateSlugs := oldTemplateSlugs
+	if templateSlugs != nil {
+		replacementTemplateSlugs = *templateSlugs
+	}
+	issued, err := s.issue(ctx, tx, clientID, label, nil, replacementTemplateSlugs, &keyID, actor)
 	if err != nil {
 		return IssuedKey{}, err
 	}
@@ -303,7 +314,7 @@ func (s *Service) ListKeys(ctx context.Context, clientID string) ([]Key, error) 
 	if !exists {
 		return nil, ErrNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,client_id,label,prefix,scopes,issued_at,issued_by,expires_at,revoked_at,revoked_by,last_used_at,last_used_ip::text,replaces_id,replaced_by_id FROM api_keys WHERE client_id=$1 ORDER BY issued_at DESC`, clientID)
+	rows, err := s.pool.Query(ctx, `SELECT id,client_id,label,prefix,scopes,template_slugs,issued_at,issued_by,expires_at,revoked_at,revoked_by,last_used_at,last_used_ip::text,replaces_id,replaced_by_id FROM api_keys WHERE client_id=$1 ORDER BY issued_at DESC`, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +322,7 @@ func (s *Service) ListKeys(ctx context.Context, clientID string) ([]Key, error) 
 	out := make([]Key, 0)
 	for rows.Next() {
 		var k Key
-		if err := rows.Scan(&k.ID, &k.ClientID, &k.Label, &k.Prefix, &k.Scopes, &k.IssuedAt, &k.IssuedBy, &k.ExpiresAt, &k.RevokedAt, &k.RevokedBy, &k.LastUsedAt, &k.LastUsedIP, &k.ReplacesID, &k.ReplacedByID); err != nil {
+		if err := rows.Scan(&k.ID, &k.ClientID, &k.Label, &k.Prefix, &k.Scopes, &k.TemplateSlugs, &k.IssuedAt, &k.IssuedBy, &k.ExpiresAt, &k.RevokedAt, &k.RevokedBy, &k.LastUsedAt, &k.LastUsedIP, &k.ReplacesID, &k.ReplacedByID); err != nil {
 			return nil, err
 		}
 		k.Status = "active"
@@ -335,7 +346,7 @@ func (s *Service) Authenticate(ctx context.Context, plaintext, remoteIP string) 
 	var identity Identity
 	var enabled bool
 	var expires, revoked *time.Time
-	err = s.pool.QueryRow(ctx, `SELECT k.secret_hash,k.client_id,c.name,k.scopes,c.enabled,k.expires_at,k.revoked_at FROM api_keys k JOIN api_clients c ON c.id=k.client_id WHERE k.id=$1`, id).Scan(&stored, &identity.ClientID, &identity.ClientName, &identity.Scopes, &enabled, &expires, &revoked)
+	err = s.pool.QueryRow(ctx, `SELECT k.secret_hash,k.client_id,c.name,k.scopes,k.template_slugs,c.enabled,k.expires_at,k.revoked_at FROM api_keys k JOIN api_clients c ON c.id=k.client_id WHERE k.id=$1`, id).Scan(&stored, &identity.ClientID, &identity.ClientName, &identity.Scopes, &identity.TemplateSlugs, &enabled, &expires, &revoked)
 	if err != nil || len(stored) != sha256.Size || subtle.ConstantTimeCompare(digest[:], stored) != 1 || !enabled || revoked != nil || (expires != nil && !expires.After(s.now())) {
 		return Identity{}, ErrInvalidKey
 	}
@@ -346,6 +357,34 @@ func (s *Service) Authenticate(ctx context.Context, plaintext, remoteIP string) 
 		_, _ = s.pool.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE id=$1 AND (last_used_at IS NULL OR last_used_at < now()-$2::interval)`, id, s.usageInterval.String())
 	}
 	return identity, nil
+}
+
+func validateTemplateSlugs(ctx context.Context, tx pgx.Tx, templateSlugs []string) ([]string, error) {
+	if templateSlugs == nil {
+		return nil, nil
+	}
+	clean := make([]string, 0, len(templateSlugs))
+	seen := map[string]bool{}
+	for _, slug := range templateSlugs {
+		slug = strings.TrimSpace(slug)
+		if slug == "" || seen[slug] {
+			return nil, errors.New("invalid template selection")
+		}
+		seen[slug] = true
+		clean = append(clean, slug)
+	}
+	slices.Sort(clean)
+	if len(clean) == 0 {
+		return clean, nil
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM templates WHERE slug = ANY($1)`, clean).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count != len(clean) {
+		return nil, errors.New("invalid template selection")
+	}
+	return clean, nil
 }
 
 func audit(ctx context.Context, tx pgx.Tx, clientID string, keyID *string, action, actor, details string) error {

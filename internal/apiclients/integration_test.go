@@ -32,12 +32,12 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issued, err := service.IssueKey(ctx, client.ID, "original", nil, "admin@example.test")
+	issued, err := service.IssueKey(ctx, client.ID, "original", nil, []string{"certificate-of-analysis"}, "admin@example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity, err := service.Authenticate(ctx, issued.Secret, "192.0.2.10")
-	if err != nil || identity.ClientID != client.ID || identity.KeyID != issued.ID {
+	if err != nil || identity.ClientID != client.ID || identity.KeyID != issued.ID || len(identity.TemplateSlugs) != 1 || identity.TemplateSlugs[0] != "certificate-of-analysis" {
 		t.Fatalf("Authenticate() = %+v, %v", identity, err)
 	}
 
@@ -54,7 +54,7 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 		t.Fatalf("hash mismatch error = %v", err)
 	}
 
-	replacement, err := service.RotateKey(ctx, client.ID, issued.ID, "replacement", 150*time.Millisecond, "admin@example.test")
+	replacement, err := service.RotateKey(ctx, client.ID, issued.ID, "replacement", 150*time.Millisecond, nil, "admin@example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,9 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 	}
 	if _, err := service.Authenticate(ctx, replacement.Secret, ""); err != nil {
 		t.Fatalf("replacement key failed: %v", err)
+	}
+	if len(replacement.TemplateSlugs) != 1 || replacement.TemplateSlugs[0] != "certificate-of-analysis" {
+		t.Fatalf("rotation did not preserve template selection: %#v", replacement.TemplateSlugs)
 	}
 	time.Sleep(200 * time.Millisecond)
 	if _, err := service.Authenticate(ctx, issued.Secret, ""); !errors.Is(err, apiclients.ErrInvalidKey) {
@@ -76,7 +79,7 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 	}
 
 	expiresAt := time.Now().Add(100 * time.Millisecond)
-	expiring, err := service.IssueKey(ctx, client.ID, "short-lived", &expiresAt, "admin@example.test")
+	expiring, err := service.IssueKey(ctx, client.ID, "short-lived", &expiresAt, nil, "admin@example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +88,7 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 		t.Fatalf("expired key error = %v", err)
 	}
 
-	third, err := service.IssueKey(ctx, client.ID, "disabled-client-key", nil, "admin@example.test")
+	third, err := service.IssueKey(ctx, client.ID, "disabled-client-key", nil, nil, "admin@example.test")
 	if err != nil {
 		t.Fatal(err)
 	}

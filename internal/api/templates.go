@@ -36,11 +36,17 @@ func (a *API) listTemplates(response http.ResponseWriter, request *http.Request)
 }
 
 func (a *API) listPublishedTemplates(response http.ResponseWriter, request *http.Request) {
-	result, err := a.templates.PublishedCatalog(request.Context())
+	user, _ := auth.UserFromContext(request.Context())
+	var templateSlugs []string
+	if user.Service {
+		templateSlugs = user.TemplateSlugs
+	}
+	result, err := a.templates.PublishedCatalog(request.Context(), templateSlugs)
 	if err != nil {
 		templateInternalError(response, "list published template catalog", err)
 		return
 	}
+	response.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(response, http.StatusOK, map[string]any{"items": result})
 }
 

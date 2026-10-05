@@ -41,7 +41,7 @@ Scopes are independent. A client implementing the complete workflow normally nee
 | `reports:read` | Poll and search report jobs |
 | `reports:download` | Download completed PDFs |
 
-Keys authorize service-wide access for their scopes; report jobs are not isolated by API client. Issue keys only to trusted applications and grant the minimum required scopes.
+Keys snapshot both their scopes and template access when issued. A key may allow all templates, no templates, or a selected set of template slugs; the selection controls catalog discovery and report submission. Report reads and downloads are still not isolated by API client, so issue keys only to trusted applications and grant the minimum required scopes.
 
 ### Recommended client workflow
 
@@ -57,7 +57,7 @@ Pinning both `version` and `schemaHash` is recommended for production integratio
 
 ### Discover report contracts
 
-`GET /v1/report-templates` requires `templates:read` and returns only immutable published versions from active templates. Typst source, sample data, drafts, archived templates, and editor metadata are not exposed. Archiving is a discoverability control rather than deletion: existing reports and explicitly version-pinned submissions continue to work.
+`GET /v1/report-templates` requires `templates:read` and returns only immutable published versions from active templates allowed by the API key's template selection. Typst source, sample data, drafts, archived templates, and editor metadata are not exposed. Archiving is a discoverability control rather than deletion: existing reports and explicitly version-pinned submissions continue to work when the key allows that template.
 
 ```sh
 curl --fail-with-body \
@@ -119,7 +119,7 @@ Treat `dataSchema` as the authoritative JSON Schema for that version. A schema h
 
 ### Submit a report
 
-`POST /v1/reports` requires `reports:submit`.
+`POST /v1/reports` requires `reports:submit`, and the requested template must be allowed by the API key's template selection. Disallowed and nonexistent templates both return `template_not_found`.
 
 ```sh
 curl --fail-with-body \

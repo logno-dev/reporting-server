@@ -129,7 +129,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
-func (r *Repository) Create(ctx context.Context, id, template string, version *int, schemaHash *string, data json.RawMessage, requestedBy string) (CreateResult, error) {
+func (r *Repository) Create(ctx context.Context, id, template string, version *int, schemaHash *string, data json.RawMessage, requestedBy string, templateSlugs []string) (CreateResult, error) {
 	digest := sha256.Sum256(data)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -140,7 +140,7 @@ func (r *Repository) Create(ctx context.Context, id, template string, version *i
 	var resolvedVersion int
 	var resolvedHash string
 	var dataSchema json.RawMessage
-	err = tx.QueryRow(ctx, `SELECT t.id, tv.version, tv.schema_sha256, tv.data_schema FROM templates t JOIN LATERAL (SELECT version, schema_sha256, data_schema FROM template_versions WHERE template_id = t.id AND status = 'published' AND ($2::integer IS NULL OR version = $2) ORDER BY version DESC LIMIT 1) tv ON true WHERE t.slug = $1`, template, version).Scan(&templateID, &resolvedVersion, &resolvedHash, &dataSchema)
+	err = tx.QueryRow(ctx, `SELECT t.id, tv.version, tv.schema_sha256, tv.data_schema FROM templates t JOIN LATERAL (SELECT version, schema_sha256, data_schema FROM template_versions WHERE template_id = t.id AND status = 'published' AND ($2::integer IS NULL OR version = $2) ORDER BY version DESC LIMIT 1) tv ON true WHERE t.slug = $1 AND ($3::text[] IS NULL OR t.slug = ANY($3))`, template, version, templateSlugs).Scan(&templateID, &resolvedVersion, &resolvedHash, &dataSchema)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CreateResult{}, ErrNotFound
 	}

@@ -61,11 +61,14 @@ func TestAdminAuthorization(t *testing.T) {
 }
 
 func TestServiceKeyScope(t *testing.T) {
-	authenticator := &Authenticator{machine: fakeMachineAuthenticator{identity: apiclients.Identity{ClientID: "client", ClientName: "LIMS", KeyID: "key", Scopes: []string{apiclients.ScopeReportsRead}}}}
+	authenticator := &Authenticator{machine: fakeMachineAuthenticator{identity: apiclients.Identity{ClientID: "client", ClientName: "LIMS", KeyID: "key", Scopes: []string{apiclients.ScopeReportsRead}, TemplateSlugs: []string{"lab-report"}}}}
 	handler := authenticator.AllowServiceOrUser(apiclients.ScopeReportsRead, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		user, ok := UserFromContext(request.Context())
 		if !ok || !user.Service {
 			t.Error("service identity missing from context")
+		}
+		if len(user.TemplateSlugs) != 1 || user.TemplateSlugs[0] != "lab-report" {
+			t.Errorf("template selection missing from context: %#v", user.TemplateSlugs)
 		}
 		response.WriteHeader(http.StatusNoContent)
 	}))

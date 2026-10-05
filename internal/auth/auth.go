@@ -27,16 +27,17 @@ const (
 )
 
 type User struct {
-	Subject   string   `json:"subject"`
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name"`
-	Groups    []string `json:"groups,omitempty"`
-	Admin     bool     `json:"admin"`
-	Service   bool     `json:"service,omitempty"`
-	ClientID  string   `json:"clientId,omitempty"`
-	KeyID     string   `json:"keyId,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
-	ExpiresAt int64    `json:"expiresAt"`
+	Subject       string   `json:"subject"`
+	Email         string   `json:"email,omitempty"`
+	Name          string   `json:"name"`
+	Groups        []string `json:"groups,omitempty"`
+	Admin         bool     `json:"admin"`
+	Service       bool     `json:"service,omitempty"`
+	ClientID      string   `json:"clientId,omitempty"`
+	KeyID         string   `json:"keyId,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
+	TemplateSlugs []string `json:"templateSlugs,omitempty"`
+	ExpiresAt     int64    `json:"expiresAt"`
 }
 
 type Config struct {
@@ -142,7 +143,7 @@ func (a *Authenticator) authorize(next http.Handler, adminRequired bool, machine
 					writeAuthError(response, http.StatusForbidden, "insufficient_scope", "API key does not grant "+machineScope)
 					return
 				}
-				user := User{Subject: "api-client:" + identity.ClientID, Name: identity.ClientName, Service: true, ClientID: identity.ClientID, KeyID: identity.KeyID, Scopes: identity.Scopes, ExpiresAt: time.Now().Add(time.Minute).Unix()}
+				user := User{Subject: "api-client:" + identity.ClientID, Name: identity.ClientName, Service: true, ClientID: identity.ClientID, KeyID: identity.KeyID, Scopes: identity.Scopes, TemplateSlugs: identity.TemplateSlugs, ExpiresAt: time.Now().Add(time.Minute).Unix()}
 				next.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), contextKey{}, user)))
 				return
 			}

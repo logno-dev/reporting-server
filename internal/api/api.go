@@ -133,7 +133,12 @@ func (a *API) createReport(response http.ResponseWriter, request *http.Request) 
 	}
 
 	jobID := ulid.Make().String()
-	resolved, err := a.reports.Create(request.Context(), jobID, input.Template, input.Version, input.SchemaHash, input.Data, actor(request))
+	user, _ := auth.UserFromContext(request.Context())
+	var templateSlugs []string
+	if user.Service {
+		templateSlugs = user.TemplateSlugs
+	}
+	resolved, err := a.reports.Create(request.Context(), jobID, input.Template, input.Version, input.SchemaHash, input.Data, actor(request), templateSlugs)
 	if errors.Is(err, jobs.ErrNotFound) {
 		writeError(response, http.StatusUnprocessableEntity, "template_not_found", "Published template version was not found")
 		return

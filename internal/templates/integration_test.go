@@ -3,6 +3,7 @@ package templates_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestTemplateArchiveVisibilityIntegration(t *testing.T) {
 	if len(listed) != 1 || listed[0].ArchivedAt == nil || listed[0].ArchivedBy == nil || *listed[0].ArchivedBy != "admin@example.test" {
 		t.Fatalf("archived template metadata = %+v", listed)
 	}
-	catalog, err := repository.PublishedCatalog(ctx)
+	catalog, err := repository.PublishedCatalog(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,15 +58,26 @@ func TestTemplateArchiveVisibilityIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := 1
-	if _, err := jobs.NewRepository(pool).Create(ctx, ulid.Make().String(), slug, &version, nil, json.RawMessage(`{}`), "api-client:test"); err != nil {
+	if _, err := jobs.NewRepository(pool).Create(ctx, ulid.Make().String(), slug, &version, nil, json.RawMessage(`{}`), "api-client:test", nil); err != nil {
 		t.Fatalf("explicit submission to archived version failed: %v", err)
 	}
 
 	if err := repository.SetArchived(ctx, slug, "admin@example.test", false); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err = repository.PublishedCatalog(ctx)
+	catalog, err = repository.PublishedCatalog(ctx, nil)
 	if err != nil || len(catalog) != 1 {
 		t.Fatalf("restored catalog = %+v, %v", catalog, err)
+	}
+	catalog, err = repository.PublishedCatalog(ctx, []string{})
+	if err != nil || len(catalog) != 0 {
+		t.Fatalf("empty template selection catalog = %+v, %v", catalog, err)
+	}
+	catalog, err = repository.PublishedCatalog(ctx, []string{slug})
+	if err != nil || len(catalog) != 1 || catalog[0].Slug != slug {
+		t.Fatalf("selected template catalog = %+v, %v", catalog, err)
+	}
+	if _, err := jobs.NewRepository(pool).Create(ctx, ulid.Make().String(), slug, &version, nil, json.RawMessage(`{}`), "api-client:test", []string{}); !errors.Is(err, jobs.ErrNotFound) {
+		t.Fatalf("submission outside template selection error = %v", err)
 	}
 }

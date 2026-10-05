@@ -814,7 +814,7 @@ Report requirements follow this prompt:`;
         <CodeSample language="Example environment">{`export REPORT_API_URL='${origin}'
 export REPORT_API_KEY='rpt_live_...'`}</CodeSample>
         <CodeSample>{`Authorization: Bearer rpt_live_<key-id>_<secret>`}</CodeSample>
-        <div className="docs-callout warning"><strong>Trust boundary</strong><span>Scopes grant service-wide access. Jobs are not isolated by API client, so issue keys only to trusted applications and grant the minimum scopes.</span></div>
+        <div className="docs-callout warning"><strong>Trust boundary</strong><span>Template selections limit discovery and submission, but report reads and downloads are not isolated by API client. Issue keys only to trusted applications and grant the minimum scopes.</span></div>
         <div className="docs-table-wrap"><table><thead><tr><th>Scope</th><th>Access</th></tr></thead><tbody>
           <tr><td><code>templates:read</code></td><td>Published versions and schemas</td></tr>
           <tr><td><code>reports:submit</code></td><td>Create asynchronous report jobs</td></tr>
@@ -825,7 +825,7 @@ export REPORT_API_KEY='rpt_live_...'`}</CodeSample>
 
       <DocSection id="docs-contracts" label="Step 1" title="Discover published contracts">
         <Endpoint method="GET" path="/v1/report-templates" scope="templates:read" />
-        <p>The catalog contains only published, immutable versions. Select a numeric version and retain its <code>schemaHash</code>. Validate outgoing data against the returned draft 2020-12 <code>dataSchema</code>.</p>
+        <p>The catalog contains only published, immutable versions allowed by the API key's template selection. Select a numeric version and retain its <code>schemaHash</code>. Validate outgoing data against the returned draft 2020-12 <code>dataSchema</code>.</p>
         <CodeSample>{`curl --fail-with-body \\
   -H "Authorization: Bearer $REPORT_API_KEY" \\
   "$REPORT_API_URL/v1/report-templates"`}</CodeSample>
@@ -847,7 +847,7 @@ export REPORT_API_KEY='rpt_live_...'`}</CodeSample>
 
       <DocSection id="docs-submit" label="Steps 2-3" title="Validate and submit">
         <Endpoint method="POST" path="/v1/reports" scope="reports:submit" />
-        <p>Pin both <code>version</code> and <code>schemaHash</code> in controlled integrations. Omitting <code>version</code> selects the latest published version atomically, but a new publication can make an existing payload invalid.</p>
+        <p>Pin both <code>version</code> and <code>schemaHash</code> in controlled integrations. The template must be allowed by the API key; disallowed and nonexistent templates return the same error. Omitting <code>version</code> selects the latest published version atomically, but a new publication can make an existing payload invalid.</p>
         <CodeSample>{`curl --fail-with-body -X POST "$REPORT_API_URL/v1/reports" \\
   -H "Authorization: Bearer $REPORT_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -1176,13 +1176,14 @@ function NewStorageProfile({ onClose, onCreated }: { onClose: () => void; onCrea
 
 const apiScopes = ["templates:read", "reports:submit", "reports:read", "reports:download"] as const;
 type APIClient = { id: string; name: string; description: string; enabled: boolean; scopes: string[]; createdAt: string; createdBy: string; disabledAt?: string };
-type APIKey = { id: string; clientId: string; label: string; prefix: string; scopes: string[]; issuedAt: string; expiresAt?: string; revokedAt?: string; lastUsedAt?: string; lastUsedIp?: string; status: "active" | "expired" | "revoked" };
+type APIKey = { id: string; clientId: string; label: string; prefix: string; scopes: string[]; templateSlugs: string[] | null; issuedAt: string; expiresAt?: string; revokedAt?: string; lastUsedAt?: string; lastUsedIp?: string; status: "active" | "expired" | "revoked" };
 type IssuedAPIKey = APIKey & { secret: string };
 
 function APIClientsArea() {
   const [clients, setClients] = useState<APIClient[]>([]);
   const [selected, setSelected] = useState("");
   const [keys, setKeys] = useState<APIKey[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
   const [keyAction, setKeyAction] = useState<{ mode: "issue" | "rotate"; keyId?: string } | null>(null);
@@ -1195,8 +1196,9 @@ function APIClientsArea() {
     return body as T;
   }
   async function refreshClients() {
-    const next = await call<APIClient[]>("/v1/api-clients");
+    const [next, availableTemplates] = await Promise.all([call<APIClient[]>("/v1/api-clients"), call<TemplateSummary[]>("/v1/templates")]);
     setClients(next);
+    setTemplates(availableTemplates);
     setSelected((current) => current || next[0]?.id || "");
   }
   async function refreshKeys(clientID = selected) {
@@ -1226,11 +1228,11 @@ function APIClientsArea() {
       <section className="client-detail">{client ? <>
         <header><div><h2>{client.name}</h2><p>{client.description || "No description"}</p></div><div className="client-actions"><span className={client.enabled ? "client-state enabled" : "client-state"}>{client.enabled ? "Enabled" : "Disabled"}</span>{client.enabled && <button className="secondary danger" onClick={disable}>Disable client</button>}<button className="primary" disabled={!client.enabled} onClick={() => setKeyAction({ mode: "issue" })}>Issue key</button></div></header>
         <div className="scope-row">{client.scopes.map((scope) => <code key={scope}>{scope}</code>)}</div>
-        <div className="key-table"><div className="key-table-head"><span>Key</span><span>Status / expiry</span><span>Last use</span><span /></div>{keys.map((key) => <article key={key.id}><div><strong>{key.label}</strong><code>{key.prefix}...</code></div><div><span className={`key-status ${key.status}`}>{key.status}</span><small>{key.expiresAt ? new Date(key.expiresAt).toLocaleString() : "No expiry"}</small></div><div><span>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "Never"}</span><small>{key.lastUsedIp || ""}</small></div><div className="key-actions">{key.status === "active" && <><button onClick={() => setKeyAction({ mode: "rotate", keyId: key.id })}>Rotate</button><button className="danger" onClick={() => revoke(key)}>Revoke</button></>}</div></article>)}</div>
+        <div className="key-table"><div className="key-table-head"><span>Key / templates</span><span>Status / expiry</span><span>Last use</span><span /></div>{keys.map((key) => <article key={key.id}><div><strong>{key.label}</strong><code>{key.prefix}...</code><small>{key.templateSlugs === null ? "All templates" : key.templateSlugs.length === 0 ? "No templates" : `${key.templateSlugs.length} template${key.templateSlugs.length === 1 ? "" : "s"}: ${key.templateSlugs.join(", ")}`}</small></div><div><span className={`key-status ${key.status}`}>{key.status}</span><small>{key.expiresAt ? new Date(key.expiresAt).toLocaleString() : "No expiry"}</small></div><div><span>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "Never"}</span><small>{key.lastUsedIp || ""}</small></div><div className="key-actions">{key.status === "active" && <><button onClick={() => setKeyAction({ mode: "rotate", keyId: key.id })}>Rotate</button><button className="danger" onClick={() => revoke(key)}>Revoke</button></>}</div></article>)}</div>
       </> : <div className="empty-state">Select or create a client.</div>}</section>
     </div>
     {creating && <NewAPIClient onClose={() => setCreating(false)} onCreated={async (created) => { setCreating(false); await refreshClients(); setSelected(created.id); }} />}
-    {keyAction && client && <APIKeyDialog client={client} action={keyAction} onClose={() => setKeyAction(null)} onIssued={async (issued) => { setKeyAction(null); setIssuedSecret(issued.secret); await refreshKeys(client.id); }} />}
+    {keyAction && client && <APIKeyDialog client={client} templates={templates} existingKey={keyAction.keyId ? keys.find((key) => key.id === keyAction.keyId) : undefined} action={keyAction} onClose={() => setKeyAction(null)} onIssued={async (issued) => { setKeyAction(null); setIssuedSecret(issued.secret); await refreshKeys(client.id); }} />}
     {issuedSecret && <div className="modal-backdrop"><section className="modal secret-modal"><div className="eyebrow">Credential issued once</div><h2>Store this key now</h2><p className="secret-warning">This plaintext cannot be retrieved again. Put it directly in the integration's secret manager. Do not paste it into tickets, logs, or source control.</p><code className="issued-secret">{issuedSecret}</code><div className="modal-actions"><button className="secondary" onClick={() => navigator.clipboard.writeText(issuedSecret)}>Copy key</button><button className="primary" onClick={() => setIssuedSecret("")}>I have stored it</button></div></section></div>}
   </section>;
 }
@@ -1241,10 +1243,12 @@ function NewAPIClient({ onClose, onCreated }: { onClose: () => void; onCreated: 
   return <div className="modal-backdrop"><form className="modal client-modal" onSubmit={submit}><div className="eyebrow">New machine identity</div><h2>Create API client</h2><label>Name<input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label><label>Description<textarea maxLength={1000} value={description} onChange={(event) => setDescription(event.target.value)} /></label><fieldset><legend>Scopes</legend>{apiScopes.map((scope) => <label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={(event) => setScopes(event.target.checked ? [...scopes, scope] : scopes.filter((item) => item !== scope))} /><span><strong>{scope}</strong><small>{scope === "templates:read" ? "Read the published template catalog" : scope === "reports:submit" ? "Create report jobs" : scope === "reports:read" ? "Read report jobs and lists" : "Download completed PDFs"}</small></span></label>)}</fieldset>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={!name.trim() || scopes.length === 0}>Create client</button></div></form></div>;
 }
 
-function APIKeyDialog({ client, action, onClose, onIssued }: { client: APIClient; action: { mode: "issue" | "rotate"; keyId?: string }; onClose: () => void; onIssued: (key: IssuedAPIKey) => void }) {
+function APIKeyDialog({ client, templates, existingKey, action, onClose, onIssued }: { client: APIClient; templates: TemplateSummary[]; existingKey?: APIKey; action: { mode: "issue" | "rotate"; keyId?: string }; onClose: () => void; onIssued: (key: IssuedAPIKey) => void }) {
   const [label, setLabel] = useState(""); const [expiresAt, setExpiresAt] = useState(""); const [graceMinutes, setGraceMinutes] = useState("15"); const [error, setError] = useState("");
-  async function submit(event: React.FormEvent) { event.preventDefault(); const rotating = action.mode === "rotate"; const path = rotating ? `/v1/api-clients/${client.id}/keys/${action.keyId}/rotate` : `/v1/api-clients/${client.id}/keys`; const body = rotating ? { label, graceSeconds: Number(graceMinutes) * 60 } : { label, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null }; const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) { setError(result.error?.message ?? "Could not issue key"); return; } onIssued(result as IssuedAPIKey); }
-  return <div className="modal-backdrop"><form className="modal" onSubmit={submit}><div className="eyebrow">{action.mode === "rotate" ? "Overlapping rotation" : client.name}</div><h2>{action.mode === "rotate" ? "Rotate key" : "Issue API key"}</h2><label>Display label<input autoFocus required maxLength={120} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Production LIMS" /></label>{action.mode === "issue" ? <label>Expiry (optional)<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label> : <label>Old key grace period (minutes)<input type="number" min="0" max="43200" required value={graceMinutes} onChange={(event) => setGraceMinutes(event.target.value)} /></label>}<p className="modal-note">The new key snapshots: {client.scopes.join(", ")}.</p>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">{action.mode === "rotate" ? "Rotate and reveal" : "Issue and reveal"}</button></div></form></div>;
+  const [allTemplates, setAllTemplates] = useState(existingKey?.templateSlugs == null);
+  const [templateSlugs, setTemplateSlugs] = useState<string[]>(existingKey?.templateSlugs ?? []);
+  async function submit(event: React.FormEvent) { event.preventDefault(); const rotating = action.mode === "rotate"; const path = rotating ? `/v1/api-clients/${client.id}/keys/${action.keyId}/rotate` : `/v1/api-clients/${client.id}/keys`; const templateSelection = allTemplates ? null : templateSlugs; const body = rotating ? { label, graceSeconds: Number(graceMinutes) * 60, templateSlugs: templateSelection } : { label, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null, templateSlugs: templateSelection }; const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) { setError(result.error?.message ?? "Could not issue key"); return; } onIssued(result as IssuedAPIKey); }
+  return <div className="modal-backdrop"><form className="modal key-modal" onSubmit={submit}><div className="eyebrow">{action.mode === "rotate" ? "Overlapping rotation" : client.name}</div><h2>{action.mode === "rotate" ? "Rotate key" : "Issue API key"}</h2><label>Display label<input autoFocus required maxLength={120} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Production LIMS" /></label>{action.mode === "issue" ? <label>Expiry (optional)<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label> : <label>Old key grace period (minutes)<input type="number" min="0" max="43200" required value={graceMinutes} onChange={(event) => setGraceMinutes(event.target.value)} /></label>}<fieldset className="template-access"><legend>Template access</legend><label><input type="checkbox" checked={allTemplates} onChange={(event) => setAllTemplates(event.target.checked)} /><span><strong>All templates</strong><small>Include current and newly published templates.</small></span></label>{!allTemplates && <div className="template-options">{templates.map((template) => <label key={template.slug}><input type="checkbox" checked={templateSlugs.includes(template.slug)} onChange={(event) => setTemplateSlugs(event.target.checked ? [...templateSlugs, template.slug] : templateSlugs.filter((slug) => slug !== template.slug))} /><span><strong>{template.name}</strong><small>{template.slug}{template.archivedAt ? " / archived" : ""}</small></span></label>)}{templates.length === 0 && <small>No templates are available.</small>}</div>}</fieldset><p className="modal-note">The new key snapshots scopes and template access. Hidden templates cannot be discovered or used for report submission.</p>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">{action.mode === "rotate" ? "Rotate and reveal" : "Issue and reveal"}</button></div></form></div>;
 }
 
 function NewTemplate({ onClose, onCreated }: { onClose: () => void; onCreated: (version: TemplateVersion) => void }) {

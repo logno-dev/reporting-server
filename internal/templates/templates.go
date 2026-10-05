@@ -278,13 +278,14 @@ func (r *Repository) PublishedArtifacts(ctx context.Context, profileID string) (
 	return artifacts, rows.Err()
 }
 
-func (r *Repository) PublishedCatalog(ctx context.Context) ([]PublishedCatalogTemplate, error) {
+func (r *Repository) PublishedCatalog(ctx context.Context, templateSlugs []string) ([]PublishedCatalogTemplate, error) {
 	const query = `
 		SELECT t.slug, t.name, tv.version, tv.published_at, tv.data_schema, tv.schema_sha256
 		FROM templates t JOIN template_versions tv ON tv.template_id = t.id
 		WHERE tv.status = 'published' AND t.archived_at IS NULL
+		  AND ($1::text[] IS NULL OR t.slug = ANY($1))
 		ORDER BY t.name, t.slug, tv.version DESC`
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, templateSlugs)
 	if err != nil {
 		return nil, fmt.Errorf("list published template catalog: %w", err)
 	}
