@@ -266,3 +266,32 @@ func TestAnalyzeDistinguishesMethodsFromFields(t *testing.T) {
 		t.Fatalf("real fields named len and map must still be required: %#v", validationErrors)
 	}
 }
+
+func TestAnalyzeMergesTypesAcrossArrayItems(t *testing.T) {
+	source := `#let report = json("report.json")
+#for question in report.questions [
+  #for row in question.listRows [#if row.accomplished [Accomplished]]
+]`
+	sample := json.RawMessage(`{
+  "questions": [
+    {"listRows":[{"accomplished":""}]},
+    {"listRows":[]},
+    {"listRows":[{"accomplished":false}]}
+  ]
+}`)
+	result, err := Analyze(source, sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationErrors, err := Validate(result.DataSchema, sample)
+	if err != nil || len(validationErrors) != 0 {
+		t.Fatalf("sample must satisfy its merged contract: %v %#v\nschema: %s", err, validationErrors, result.DataSchema)
+	}
+	validationErrors, err = Validate(result.DataSchema, json.RawMessage(`{"questions":[{"listRows":[{"accomplished":1}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validationErrors) != 1 || validationErrors[0].Path != "$.questions[0].listRows[0].accomplished" || validationErrors[0].Message != "expected boolean or string" {
+		t.Fatalf("unexpected validation errors: %#v", validationErrors)
+	}
+}

@@ -377,13 +377,20 @@ func schemaFor(value any, structure *node, depth int) (any, error) {
 	if structure.array {
 		itemStructure := *structure
 		itemStructure.array = false
-		var itemValue any = map[string]any{}
-		if array, ok := value.([]any); ok && len(array) > 0 {
-			itemValue = array[0]
+		array, _ := value.([]any)
+		if len(array) == 0 {
+			array = []any{map[string]any{}}
 		}
-		item, err := schemaFor(itemValue, &itemStructure, depth+1)
+		item, err := schemaFor(array[0], &itemStructure, depth+1)
 		if err != nil {
 			return nil, err
+		}
+		for _, itemValue := range array[1:] {
+			next, err := schemaFor(itemValue, &itemStructure, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			item = mergeSchemas(item, next)
 		}
 		return map[string]any{"type": "array", "items": item}, nil
 	}
@@ -411,7 +418,11 @@ func schemaFor(value any, structure *node, depth int) (any, error) {
 			if child == nil {
 				child = &node{children: map[string]*node{}}
 			}
-			property, err := schemaFor(object[key], child, depth+1)
+			childValue, exists := object[key]
+			if !exists {
+				childValue = defaultValueFor(child)
+			}
+			property, err := schemaFor(childValue, child, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -462,6 +473,13 @@ func schemaFor(value any, structure *node, depth int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			for _, itemValue := range typed[1:] {
+				next, err := schemaFor(itemValue, structure, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				item = mergeSchemas(item, next)
+			}
 		} else if len(structure.children) > 0 {
 			item, _ = schemaFor(map[string]any{}, structure, depth+1)
 		}
@@ -479,6 +497,75 @@ func schemaFor(value any, structure *node, depth int) (any, error) {
 		return map[string]any{"type": "null"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported sample value %T", value)
+	}
+}
+
+func defaultValueFor(structure *node) any {
+	if structure.array {
+		return []any{map[string]any{}}
+	}
+	if len(structure.children) > 0 {
+		return map[string]any{}
+	}
+	return ""
+}
+
+func mergeSchemas(left, right any) any {
+	leftSchema, leftOK := left.(map[string]any)
+	rightSchema, rightOK := right.(map[string]any)
+	if !leftOK || !rightOK {
+		return left
+	}
+	leftTypes := schemaTypes(leftSchema)
+	rightTypes := schemaTypes(rightSchema)
+	if len(leftTypes) != 1 || len(rightTypes) != 1 || leftTypes[0] != rightTypes[0] {
+		seen := map[string]bool{}
+		for _, typeName := range append(leftTypes, rightTypes...) {
+			seen[typeName] = true
+		}
+		types := make([]string, 0, len(seen))
+		for typeName := range seen {
+			types = append(types, typeName)
+		}
+		sort.Strings(types)
+		values := make([]any, len(types))
+		for index, typeName := range types {
+			values[index] = typeName
+		}
+		return map[string]any{"type": values}
+	}
+
+	switch leftTypes[0] {
+	case "object":
+		leftProperties, _ := leftSchema["properties"].(map[string]any)
+		rightProperties, _ := rightSchema["properties"].(map[string]any)
+		for name, rightProperty := range rightProperties {
+			if leftProperty, exists := leftProperties[name]; exists {
+				leftProperties[name] = mergeSchemas(leftProperty, rightProperty)
+			} else {
+				leftProperties[name] = rightProperty
+			}
+		}
+	case "array":
+		leftSchema["items"] = mergeSchemas(leftSchema["items"], rightSchema["items"])
+	}
+	return leftSchema
+}
+
+func schemaTypes(schema map[string]any) []string {
+	switch value := schema["type"].(type) {
+	case string:
+		return []string{value}
+	case []any:
+		result := make([]string, 0, len(value))
+		for _, item := range value {
+			if typeName, ok := item.(string); ok {
+				result = append(result, typeName)
+			}
+		}
+		return result
+	default:
+		return nil
 	}
 }
 
@@ -508,13 +595,19 @@ func validateAt(schema map[string]any, value any, path string, depth int, result
 	if depth > maxDepth || len(*result) > maxPaths {
 		return ErrTooComplex
 	}
-	typeName, _ := schema["type"].(string)
-	valid := typeMatches(typeName, value)
+	types := schemaTypes(schema)
+	valid := false
+	for _, typeName := range types {
+		if typeMatches(typeName, value) {
+			valid = true
+			break
+		}
+	}
 	if !valid {
-		*result = append(*result, ValidationError{Path: path, Message: "expected " + typeName})
+		*result = append(*result, ValidationError{Path: path, Message: "expected " + strings.Join(types, " or ")})
 		return nil
 	}
-	if typeName == "object" {
+	if typeMatches("object", value) && containsType(types, "object") {
 		object := value.(map[string]any)
 		properties, _ := schema["properties"].(map[string]any)
 		if required, ok := schema["required"].([]any); ok {
@@ -539,7 +632,7 @@ func validateAt(schema map[string]any, value any, path string, depth int, result
 			}
 		}
 	}
-	if typeName == "array" {
+	if typeMatches("array", value) && containsType(types, "array") {
 		itemSchema, ok := schema["items"].(map[string]any)
 		if !ok {
 			return errors.New("invalid generated array schema")
@@ -551,6 +644,15 @@ func validateAt(schema map[string]any, value any, path string, depth int, result
 		}
 	}
 	return nil
+}
+
+func containsType(types []string, expected string) bool {
+	for _, typeName := range types {
+		if typeName == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func typeMatches(typeName string, value any) bool {
