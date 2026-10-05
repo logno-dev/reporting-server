@@ -28,6 +28,10 @@ type rotateAPIKeyInput struct {
 	TemplateSlugs json.RawMessage `json:"templateSlugs"`
 }
 
+type apiKeyTemplateAccessInput struct {
+	TemplateSlugs json.RawMessage `json:"templateSlugs"`
+}
+
 func (a *API) listAPIClients(response http.ResponseWriter, request *http.Request) {
 	clients, err := a.apiClients.ListClients(request.Context())
 	if err != nil {
@@ -140,6 +144,28 @@ func parseTemplateSelection(raw json.RawMessage) ([]string, bool, error) {
 		return nil, true, errors.New("invalid template selection")
 	}
 	return templateSlugs, true, nil
+}
+
+func (a *API) updateAPIKeyTemplateAccess(response http.ResponseWriter, request *http.Request) {
+	var input apiKeyTemplateAccessInput
+	if !decodeJSON(response, request, &input) {
+		return
+	}
+	templateSlugs, supplied, err := parseTemplateSelection(input.TemplateSlugs)
+	if err != nil || !supplied {
+		writeError(response, http.StatusBadRequest, "invalid_request", "templateSlugs must be null or an array of template slugs")
+		return
+	}
+	err = a.apiClients.UpdateKeyTemplateAccess(request.Context(), request.PathValue("id"), request.PathValue("keyId"), templateSlugs, actor(request))
+	if errors.Is(err, apiclients.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Active API key was not found")
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", "Template selection is invalid")
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) revokeAPIKey(response http.ResponseWriter, request *http.Request) {

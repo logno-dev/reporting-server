@@ -41,7 +41,7 @@ Scopes are independent. A client implementing the complete workflow normally nee
 | `reports:read` | Poll and search report jobs |
 | `reports:download` | Download completed PDFs |
 
-Keys snapshot both their scopes and template access when issued. A key may allow all templates, no templates, or a selected set of template slugs; the selection controls catalog discovery and report submission. Report reads and downloads are still not isolated by API client, so issue keys only to trusted applications and grant the minimum required scopes.
+Keys snapshot their scopes when issued. Their template access can be changed later without rotating the secret. A key may allow all templates, no templates, or a selected set of template slugs; the selection controls catalog discovery and report submission. Report reads and downloads are still not isolated by API client, so issue keys only to trusted applications and grant the minimum required scopes.
 
 ### Recommended client workflow
 

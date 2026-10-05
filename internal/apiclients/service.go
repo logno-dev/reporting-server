@@ -306,6 +306,29 @@ func (s *Service) RevokeKey(ctx context.Context, clientID, keyID, actor string) 
 	return tx.Commit(ctx)
 }
 
+func (s *Service) UpdateKeyTemplateAccess(ctx context.Context, clientID, keyID string, templateSlugs []string, actor string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	templateSlugs, err = validateTemplateSlugs(ctx, tx, templateSlugs)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE api_keys k SET template_slugs=$3 FROM api_clients c WHERE k.id=$1 AND k.client_id=$2 AND c.id=k.client_id AND c.enabled AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now())`, keyID, clientID, templateSlugs)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := audit(ctx, tx, clientID, &keyID, "key.template_access_updated", actor, `{}`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Service) ListKeys(ctx context.Context, clientID string) ([]Key, error) {
 	var exists bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_clients WHERE id=$1)`, clientID).Scan(&exists); err != nil {

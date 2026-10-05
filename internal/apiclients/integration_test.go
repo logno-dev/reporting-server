@@ -40,6 +40,16 @@ func TestCredentialLifecycleIntegration(t *testing.T) {
 	if err != nil || identity.ClientID != client.ID || identity.KeyID != issued.ID || len(identity.TemplateSlugs) != 1 || identity.TemplateSlugs[0] != "certificate-of-analysis" {
 		t.Fatalf("Authenticate() = %+v, %v", identity, err)
 	}
+	if err := service.UpdateKeyTemplateAccess(ctx, client.ID, issued.ID, []string{}, "admin@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err = service.Authenticate(ctx, issued.Secret, "")
+	if err != nil || identity.TemplateSlugs == nil || len(identity.TemplateSlugs) != 0 {
+		t.Fatalf("updated empty template selection = %#v, %v", identity.TemplateSlugs, err)
+	}
+	if err := service.UpdateKeyTemplateAccess(ctx, client.ID, issued.ID, []string{"certificate-of-analysis"}, "admin@example.test"); err != nil {
+		t.Fatal(err)
+	}
 
 	keyID, _, err := apiclients.ParseKey(issued.Secret)
 	if err != nil {

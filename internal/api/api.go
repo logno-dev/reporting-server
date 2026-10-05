@@ -88,6 +88,7 @@ func New(reports *jobs.Repository, templateRepository *templates.Repository, que
 	mux.Handle("GET /v1/api-clients/{id}/keys", authenticator.RequireAdmin(http.HandlerFunc(api.listAPIKeys)))
 	mux.Handle("POST /v1/api-clients/{id}/keys", authenticator.RequireAdmin(http.HandlerFunc(api.issueAPIKey)))
 	mux.Handle("POST /v1/api-clients/{id}/keys/{keyId}/rotate", authenticator.RequireAdmin(http.HandlerFunc(api.rotateAPIKey)))
+	mux.Handle("PUT /v1/api-clients/{id}/keys/{keyId}/templates", authenticator.RequireAdmin(http.HandlerFunc(api.updateAPIKeyTemplateAccess)))
 	mux.Handle("POST /v1/api-clients/{id}/keys/{keyId}/revoke", authenticator.RequireAdmin(http.HandlerFunc(api.revokeAPIKey)))
 	mux.HandleFunc("/v1/", func(response http.ResponseWriter, _ *http.Request) {
 		writeError(response, http.StatusNotFound, "not_found", "API endpoint was not found")
