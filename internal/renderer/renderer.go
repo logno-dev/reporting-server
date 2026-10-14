@@ -16,11 +16,20 @@ type Renderer struct {
 	timeout time.Duration
 }
 
+type Asset struct {
+	Filename string
+	Contents []byte
+}
+
 func New(binary, root string, timeout time.Duration) *Renderer {
 	return &Renderer{binary: binary, root: root, timeout: timeout}
 }
 
 func (r *Renderer) Render(ctx context.Context, source string, data json.RawMessage) ([]byte, error) {
+	return r.RenderWithAssets(ctx, source, data, nil)
+}
+
+func (r *Renderer) RenderWithAssets(ctx context.Context, source string, data json.RawMessage, assets []Asset) ([]byte, error) {
 	workspace, err := os.MkdirTemp("", "report-render-*")
 	if err != nil {
 		return nil, fmt.Errorf("create render workspace: %w", err)
@@ -40,6 +49,20 @@ func (r *Renderer) Render(ctx context.Context, source string, data json.RawMessa
 	for _, name := range []string{"data.json", "report.json"} {
 		if err := os.WriteFile(filepath.Join(workspace, name), data, 0o600); err != nil {
 			return nil, fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	if len(assets) > 0 {
+		assetDirectory := filepath.Join(workspace, "assets")
+		if err := os.Mkdir(assetDirectory, 0o700); err != nil {
+			return nil, fmt.Errorf("create render asset directory: %w", err)
+		}
+		for _, asset := range assets {
+			if asset.Filename == "" || filepath.Base(asset.Filename) != asset.Filename || asset.Filename == "." || asset.Filename == ".." {
+				return nil, fmt.Errorf("invalid render asset filename %q", asset.Filename)
+			}
+			if err := os.WriteFile(filepath.Join(assetDirectory, asset.Filename), asset.Contents, 0o600); err != nil {
+				return nil, fmt.Errorf("write render asset %s: %w", asset.Filename, err)
+			}
 		}
 	}
 

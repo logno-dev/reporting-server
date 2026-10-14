@@ -272,6 +272,10 @@ func (r *Repository) TemplatePlacements(ctx context.Context, templateID int64, v
 	return r.availablePlacements(ctx, `o.template_id = $1 AND o.template_version = $2`, preferredProfileID, templateID, version)
 }
 
+func (r *Repository) ObjectPlacements(ctx context.Context, objectID, preferredProfileID string) ([]Placement, error) {
+	return r.availablePlacements(ctx, `o.id = $1`, preferredProfileID, objectID)
+}
+
 func (r *Repository) availablePlacements(ctx context.Context, condition, preferredProfileID string, arguments ...any) ([]Placement, error) {
 	preferredIndex := len(arguments) + 1
 	query := fmt.Sprintf(`

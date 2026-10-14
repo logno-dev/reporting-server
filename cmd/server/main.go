@@ -90,7 +90,7 @@ func run() error {
 				slog.Error("worker health server stopped", "error", err)
 			}
 		}()
-		worker := reportqueue.NewWorker(redis, cfg.WorkerConcurrency, reports, render, storageService, storageRepository, cfg.RendererVersion, cfg.RenderTimeout+30*time.Second)
+		worker := reportqueue.NewWorker(redis, cfg.WorkerConcurrency, reports, templateRepository, render, storageService, storageRepository, cfg.RendererVersion, cfg.RenderTimeout+30*time.Second)
 		go func() {
 			<-ctx.Done()
 			worker.Shutdown()

@@ -16,6 +16,7 @@ import (
 	"reporting-server/internal/jobs"
 	"reporting-server/internal/renderer"
 	"reporting-server/internal/storagecontrol"
+	"reporting-server/internal/templates"
 )
 
 const reportTask = "report:render"
@@ -191,6 +192,7 @@ type Worker struct {
 	server          *asynq.Server
 	migrationServer *asynq.Server
 	reports         *jobs.Repository
+	templates       *templates.Repository
 	renderer        *renderer.Renderer
 	storage         *storagecontrol.Service
 	version         string
@@ -203,14 +205,14 @@ type Worker struct {
 	shutdownOnce    sync.Once
 }
 
-func NewWorker(options asynq.RedisClientOpt, concurrency int, reports *jobs.Repository, render *renderer.Renderer, store *storagecontrol.Service, metadata *storagecontrol.Repository, version string, lease time.Duration) *Worker {
+func NewWorker(options asynq.RedisClientOpt, concurrency int, reports *jobs.Repository, templateRepository *templates.Repository, render *renderer.Renderer, store *storagecontrol.Service, metadata *storagecontrol.Repository, version string, lease time.Duration) *Worker {
 	return &Worker{
 		server: asynq.NewServer(options, asynq.Config{
 			Concurrency: concurrency,
 			Queues:      map[string]int{"default": 1},
 		}),
 		migrationServer: asynq.NewServer(options, asynq.Config{Concurrency: concurrency, Queues: map[string]int{"storage-migration": 1}}),
-		reports:         reports, renderer: render, storage: store, metadata: metadata, version: version,
+		reports:         reports, templates: templateRepository, renderer: render, storage: store, metadata: metadata, version: version,
 		workerID: "worker-" + ulid.Make().String(), concurrency: concurrency, lease: lease, startedAt: time.Now().UTC(),
 	}
 }
@@ -349,8 +351,20 @@ func (w *Worker) handleReport(ctx context.Context, task *asynq.Task) error {
 	if err != nil {
 		return w.handleFailure(ctx, task, payload.JobID, err)
 	}
+	assetMetadata, err := w.templates.ListAssetsByVersion(ctx, job.TemplateID, job.TemplateVersion)
+	if err != nil {
+		return w.handleFailure(ctx, task, payload.JobID, err)
+	}
+	assets := make([]renderer.Asset, 0, len(assetMetadata))
+	for _, asset := range assetMetadata {
+		contents, err := w.storage.ReadObject(ctx, asset.ObjectID, preferredProfileID, asset.SHA256)
+		if err != nil {
+			return w.handleFailure(ctx, task, payload.JobID, fmt.Errorf("load template asset %s: %w", asset.Filename, err))
+		}
+		assets = append(assets, renderer.Asset{Filename: asset.Filename, Contents: contents})
+	}
 
-	pdf, err := w.renderer.Render(ctx, string(source), job.Data)
+	pdf, err := w.renderer.RenderWithAssets(ctx, string(source), job.Data, assets)
 	if err != nil {
 		return w.handleFailure(ctx, task, payload.JobID, err)
 	}

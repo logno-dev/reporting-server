@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +15,7 @@ import (
 
 	"reporting-server/internal/auth"
 	"reporting-server/internal/contract"
+	"reporting-server/internal/renderer"
 	"reporting-server/internal/templates"
 )
 
@@ -24,6 +29,19 @@ type templateInput struct {
 type versionInput struct {
 	Source     string          `json:"source"`
 	SampleData json.RawMessage `json:"sampleData"`
+}
+
+type createVersionInput struct {
+	Source      string          `json:"source"`
+	SampleData  json.RawMessage `json:"sampleData"`
+	BaseVersion *int            `json:"baseVersion,omitempty"`
+}
+
+type previewInput struct {
+	Source     string          `json:"source"`
+	SampleData json.RawMessage `json:"sampleData"`
+	Slug       string          `json:"slug"`
+	Version    int             `json:"version"`
 }
 
 func (a *API) listTemplates(response http.ResponseWriter, request *http.Request) {
@@ -117,11 +135,11 @@ func (a *API) getTemplateVersion(response http.ResponseWriter, request *http.Req
 }
 
 func (a *API) createTemplateVersion(response http.ResponseWriter, request *http.Request) {
-	var input versionInput
+	var input createVersionInput
 	if !decodeJSON(response, request, &input) {
 		return
 	}
-	if strings.TrimSpace(input.Source) == "" || !validSampleData(input.SampleData) {
+	if strings.TrimSpace(input.Source) == "" || !validSampleData(input.SampleData) || (input.BaseVersion != nil && *input.BaseVersion < 1) {
 		writeError(response, http.StatusBadRequest, "invalid_request", "source and a JSON object sampleData are required")
 		return
 	}
@@ -130,7 +148,7 @@ func (a *API) createTemplateVersion(response http.ResponseWriter, request *http.
 		contractError(response, err)
 		return
 	}
-	result, err := a.templates.CreateVersion(request.Context(), request.PathValue("slug"), input.Source, analysis.SampleData, analysis.DataSchema, analysis.SchemaHash, actor(request))
+	result, err := a.templates.CreateVersion(request.Context(), request.PathValue("slug"), input.Source, analysis.SampleData, analysis.DataSchema, analysis.SchemaHash, actor(request), input.BaseVersion)
 	handleVersionWrite(response, result, err, http.StatusCreated)
 }
 
@@ -209,11 +227,16 @@ func (a *API) approveTemplateVersion(response http.ResponseWriter, request *http
 		writeJSON(response, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "data_validation_failed", "message": "Sample data does not satisfy the generated contract", "details": validationErrors}})
 		return
 	}
-	if _, err := a.renderer.Render(request.Context(), draft.Source, draft.SampleData); err != nil {
+	assets, err := a.renderAssets(request.Context(), draft.TemplateID, draft.Version)
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "asset_unavailable", "Template assets could not be loaded: "+err.Error())
+		return
+	}
+	if _, err := a.renderer.RenderWithAssets(request.Context(), draft.Source, draft.SampleData, assets); err != nil {
 		writeError(response, http.StatusUnprocessableEntity, "compile_failed", "Template must compile before approval: "+err.Error())
 		return
 	}
-	result, err := a.templates.Approve(request.Context(), request.PathValue("slug"), version, draft.Source, draft.SampleData, analysis.DataSchema, analysis.SchemaHash, actor(request))
+	result, err := a.templates.Approve(request.Context(), request.PathValue("slug"), version, draft.Source, draft.SampleData, analysis.DataSchema, analysis.SchemaHash, actor(request), draft.AssetsRevision)
 	handleVersionWrite(response, result, err, http.StatusOK)
 }
 
@@ -233,6 +256,10 @@ func (a *API) publishTemplateVersion(response http.ResponseWriter, request *http
 	}
 	if version.Status != "approved" {
 		writeError(response, http.StatusConflict, "invalid_transition", "Only approved versions can be published")
+		return
+	}
+	if _, err := a.renderAssets(request.Context(), version.TemplateID, version.Version); err != nil {
+		writeError(response, http.StatusServiceUnavailable, "asset_unavailable", "Template assets could not be verified")
 		return
 	}
 	profileID, client, err := a.storage.Default(request.Context())
@@ -258,12 +285,13 @@ func (a *API) publishTemplateVersion(response http.ResponseWriter, request *http
 }
 
 func (a *API) previewTemplate(response http.ResponseWriter, request *http.Request) {
-	var input versionInput
+	var input previewInput
 	if !decodeJSON(response, request, &input) {
 		return
 	}
-	if strings.TrimSpace(input.Source) == "" || !validSampleData(input.SampleData) {
-		writeError(response, http.StatusBadRequest, "invalid_request", "source and a JSON object sampleData are required")
+	versionSpecified := input.Slug != "" || input.Version != 0
+	if strings.TrimSpace(input.Source) == "" || !validSampleData(input.SampleData) || (versionSpecified && (!validSlug.MatchString(input.Slug) || input.Version < 1)) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "source and a JSON object sampleData are required; slug and version must be provided together")
 		return
 	}
 	analysis, err := contract.Analyze(input.Source, input.SampleData)
@@ -280,7 +308,25 @@ func (a *API) previewTemplate(response http.ResponseWriter, request *http.Reques
 		writeJSON(response, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "data_validation_failed", "message": "Sample data does not satisfy the generated contract", "details": validationErrors}})
 		return
 	}
-	pdf, err := a.renderer.Render(request.Context(), input.Source, analysis.SampleData)
+	var assets []renderer.Asset
+	if versionSpecified {
+		version, err := a.templates.GetVersion(request.Context(), input.Slug, input.Version)
+		if errors.Is(err, templates.ErrNotFound) {
+			writeError(response, http.StatusNotFound, "not_found", "Template version was not found")
+			return
+		}
+		if err != nil {
+			templateInternalError(response, "load template preview version", err)
+			return
+		}
+		assets, err = a.renderAssets(request.Context(), version.TemplateID, version.Version)
+		if err != nil {
+			slog.Warn("load template preview assets", "slug", input.Slug, "version", input.Version, "error", err)
+			writeError(response, http.StatusUnprocessableEntity, "asset_unavailable", "Template assets could not be loaded")
+			return
+		}
+	}
+	pdf, err := a.renderer.RenderWithAssets(request.Context(), input.Source, analysis.SampleData, assets)
 	if err != nil {
 		slog.Info("template preview failed", "error", err)
 		writeError(response, http.StatusUnprocessableEntity, "compile_failed", err.Error())
@@ -291,6 +337,166 @@ func (a *API) previewTemplate(response http.ResponseWriter, request *http.Reques
 	response.WriteHeader(http.StatusOK)
 	if _, err := response.Write(pdf); err != nil {
 		slog.Error("write preview response", "error", err)
+	}
+}
+
+func (a *API) listTemplateAssets(response http.ResponseWriter, request *http.Request) {
+	version, ok := pathVersion(response, request)
+	if !ok {
+		return
+	}
+	assets, err := a.templates.ListAssets(request.Context(), request.PathValue("slug"), version)
+	if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template version was not found")
+		return
+	}
+	if err != nil {
+		templateInternalError(response, "list template assets", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"items": assets})
+}
+
+func (a *API) putTemplateAsset(response http.ResponseWriter, request *http.Request) {
+	version, ok := pathVersion(response, request)
+	if !ok {
+		return
+	}
+	filename := request.PathValue("filename")
+	if !templates.ValidAssetFilename(filename) {
+		writeError(response, http.StatusBadRequest, "invalid_asset_filename", "Asset filename must be a simple filename of at most 128 characters")
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, templates.MaxAssetBytes)
+	contents, err := io.ReadAll(request.Body)
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "Template asset exceeds the 5 MiB limit")
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_asset", "Could not read template asset")
+		return
+	}
+	if len(contents) == 0 {
+		writeError(response, http.StatusBadRequest, "invalid_asset", "Template asset cannot be empty")
+		return
+	}
+	templateVersion, err := a.templates.GetVersion(request.Context(), request.PathValue("slug"), version)
+	if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template version was not found")
+		return
+	}
+	if err != nil {
+		templateInternalError(response, "load template asset version", err)
+		return
+	}
+	if templateVersion.Status != "draft" {
+		writeError(response, http.StatusConflict, "invalid_transition", "Assets can only be changed on draft versions")
+		return
+	}
+	contentType, ok := templateAssetContentType(contents)
+	if !ok {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_asset", "Supported asset formats are PNG, JPEG, GIF, WebP, SVG, and PDF")
+		return
+	}
+	if err := a.templates.CheckAssetCapacity(request.Context(), request.PathValue("slug"), version, filename, int64(len(contents))); errors.Is(err, templates.ErrAssetLimit) {
+		writeError(response, http.StatusRequestEntityTooLarge, "asset_limit_exceeded", "A template version supports up to 100 assets and 20 MiB total")
+		return
+	} else if errors.Is(err, templates.ErrConflict) {
+		writeError(response, http.StatusConflict, "invalid_transition", "Assets can only be changed on draft versions")
+		return
+	} else if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template version was not found")
+		return
+	} else if err != nil {
+		templateInternalError(response, "check template asset capacity", err)
+		return
+	}
+	profileID, client, err := a.storage.Default(request.Context())
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "storage_unavailable", "Could not configure template asset storage")
+		return
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(contents))
+	key := fmt.Sprintf("template-assets/%s/%s", digest[:2], digest)
+	asset, err := a.templates.StoreDraftAsset(request.Context(), request.PathValue("slug"), version, filename, contentType, profileID, key, digest, contents, client, actor(request))
+	if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template version was not found")
+		return
+	}
+	if errors.Is(err, templates.ErrConflict) {
+		writeError(response, http.StatusConflict, "invalid_transition", "Assets can only be changed on draft versions")
+		return
+	}
+	if errors.Is(err, templates.ErrAssetLimit) {
+		writeError(response, http.StatusRequestEntityTooLarge, "asset_limit_exceeded", "A template version supports up to 100 assets and 20 MiB total")
+		return
+	}
+	if errors.Is(err, templates.ErrAssetStore) {
+		writeError(response, http.StatusServiceUnavailable, "storage_unavailable", "Could not store template asset")
+		return
+	}
+	if err != nil {
+		templateInternalError(response, "record template asset", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, asset)
+}
+
+func (a *API) deleteTemplateAsset(response http.ResponseWriter, request *http.Request) {
+	version, ok := pathVersion(response, request)
+	if !ok {
+		return
+	}
+	filename := request.PathValue("filename")
+	if !templates.ValidAssetFilename(filename) {
+		writeError(response, http.StatusBadRequest, "invalid_asset_filename", "Invalid asset filename")
+		return
+	}
+	err := a.templates.DeleteDraftAsset(request.Context(), request.PathValue("slug"), version, filename)
+	if errors.Is(err, templates.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "Template asset was not found")
+		return
+	}
+	if errors.Is(err, templates.ErrConflict) {
+		writeError(response, http.StatusConflict, "invalid_transition", "Assets can only be changed on draft versions")
+		return
+	}
+	if err != nil {
+		templateInternalError(response, "delete template asset", err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) renderAssets(ctx context.Context, templateID int64, version int) ([]renderer.Asset, error) {
+	assets, err := a.templates.ListAssetsByVersion(ctx, templateID, version)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]renderer.Asset, 0, len(assets))
+	for _, asset := range assets {
+		contents, err := a.storage.ReadObject(ctx, asset.ObjectID, "", asset.SHA256)
+		if err != nil {
+			return nil, fmt.Errorf("load %s: %w", asset.Filename, err)
+		}
+		result = append(result, renderer.Asset{Filename: asset.Filename, Contents: contents})
+	}
+	return result, nil
+}
+
+func templateAssetContentType(contents []byte) (string, bool) {
+	trimmed := bytes.TrimSpace(contents)
+	if bytes.HasPrefix(trimmed, []byte("<svg")) || (bytes.HasPrefix(trimmed, []byte("<?xml")) && bytes.Contains(trimmed[:min(len(trimmed), 1024)], []byte("<svg"))) {
+		return "image/svg+xml", true
+	}
+	contentType := http.DetectContentType(contents)
+	switch contentType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf":
+		return contentType, true
+	default:
+		return "", false
 	}
 }
 

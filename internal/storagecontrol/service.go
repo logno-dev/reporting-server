@@ -66,6 +66,14 @@ func (s *Service) ReadTemplate(ctx context.Context, templateID int64, version in
 	return s.read(ctx, placements, legacyKey, "")
 }
 
+func (s *Service) ReadObject(ctx context.Context, objectID, preferredProfileID, expectedSHA256 string) ([]byte, error) {
+	placements, err := s.repository.ObjectPlacements(ctx, objectID, preferredProfileID)
+	if err != nil {
+		return nil, err
+	}
+	return s.read(ctx, placements, "", expectedSHA256)
+}
+
 func (s *Service) read(ctx context.Context, placements []Placement, legacyKey, expectedSHA256 string) ([]byte, error) {
 	if len(placements) == 0 {
 		if s.legacy == nil || legacyKey == "" {

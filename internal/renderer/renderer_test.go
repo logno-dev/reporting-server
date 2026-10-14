@@ -33,3 +33,38 @@ func TestRenderWritesBothDataFileNames(t *testing.T) {
 		t.Errorf("Render() output = %q, want %q", result, input)
 	}
 }
+
+func TestRenderMaterializesAssets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test renderer uses a shell script")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "common"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(t.TempDir(), "logo.svg")
+	if err := os.WriteFile(expected, []byte("<svg></svg>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "typst")
+	script := "#!/bin/sh\nset -eu\ncmp \"$3/assets/logo.svg\" \"" + expected + "\"\ncp \"$3/report.json\" \"$5\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(binary, root, time.Second).RenderWithAssets(context.Background(), "content", json.RawMessage(`{}`), []Asset{{Filename: "logo.svg", Contents: []byte("<svg></svg>")}})
+	if err != nil {
+		t.Fatalf("RenderWithAssets() error = %v", err)
+	}
+}
+
+func TestRenderRejectsUnsafeAssetFilename(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "common"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New("typst", root, time.Second).RenderWithAssets(context.Background(), "content", json.RawMessage(`{}`), []Asset{{Filename: "../logo.svg", Contents: []byte("bad")}})
+	if err == nil {
+		t.Fatal("RenderWithAssets() accepted a traversal filename")
+	}
+}

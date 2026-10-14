@@ -31,6 +31,14 @@ type TemplateVersion = VersionSummary & {
 type ContractDiagnostic = { severity: "error" | "warning"; message: string; offset?: number };
 type ContractAnalysis = { sampleData: Record<string, unknown>; dataSchema: Record<string, unknown>; schemaHash: string; diagnostics: ContractDiagnostic[] };
 
+type TemplateAsset = {
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+};
+
 type AuthUser = {
   subject: string;
   email?: string;
@@ -60,6 +68,12 @@ const starterData = `{
   }
 }`;
 
+function formatBytes(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selection, setSelection] = useState<{ slug: string; version: number } | null>(null);
@@ -73,7 +87,10 @@ function App() {
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [dataOpen, setDataOpen] = useState(true);
+  const [drawerTab, setDrawerTab] = useState<"data" | "assets">("data");
   const [dataHeight, setDataHeight] = useState(253);
+  const [assets, setAssets] = useState<TemplateAsset[]>([]);
+  const [assetRevision, setAssetRevision] = useState(0);
   const [newOpen, setNewOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [activePane, setActivePane] = useState<"source" | "split" | "preview">(() =>
@@ -87,6 +104,7 @@ function App() {
   const [area, setArea] = useState<"templates" | "reports" | "storage" | "clients" | "docs">("templates");
   const previewRequest = useRef<AbortController | null>(null);
 	const contractRequest = useRef<AbortController | null>(null);
+  const assetInput = useRef<HTMLInputElement | null>(null);
   const draftWrite = useRef(false);
   const activeSelection = useRef(selection);
   activeSelection.current = selection;
@@ -94,7 +112,7 @@ function App() {
 
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers);
-    if (options.body) headers.set("Content-Type", "application/json");
+    if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     const response = await fetch(path, { ...options, headers });
     if (!response.ok) {
       if (response.status === 401) setUser(null);
@@ -145,10 +163,14 @@ function App() {
     previewRequest.current = null;
     setPreviewURL("");
     setPreviewExpanded(false);
+    setAssets([]);
     setBusy("loading");
     let active = true;
-    request<TemplateVersion>(`/v1/templates/${selection.slug}/versions/${selection.version}`)
-      .then((version) => {
+    Promise.all([
+      request<TemplateVersion>(`/v1/templates/${selection.slug}/versions/${selection.version}`),
+      request<{ items: TemplateAsset[] }>(`/v1/templates/${selection.slug}/versions/${selection.version}/assets`),
+    ])
+      .then(([version, assetResponse]) => {
         if (!active) return;
         setSelectedSlug(version.slug);
         setCurrent(version);
@@ -158,6 +180,7 @@ function App() {
         setSampleData(formattedData);
         setSavedSampleData(formattedData);
 		setContract({ sampleData: version.sampleData, dataSchema: version.dataSchema, schemaHash: version.schemaHash, diagnostics: [] });
+        setAssets([...assetResponse.items].sort((a, b) => a.filename.localeCompare(b.filename)));
         setMessage("");
       })
       .catch((error: Error) => { if (active) setMessage(error.message); })
@@ -203,6 +226,7 @@ function App() {
   }
 
   async function preview(automatic = false) {
+    if (!current) return;
     let data: unknown;
     try {
       data = parsedData();
@@ -221,7 +245,7 @@ function App() {
         method: "POST",
         headers,
         signal: controller.signal,
-        body: JSON.stringify({ source, sampleData: data }),
+        body: JSON.stringify({ slug: current.slug, version: current.version, source, sampleData: data }),
       });
       if (!response.ok) {
         const body = await response.json() as { error: { message: string } };
@@ -304,9 +328,10 @@ function App() {
     try {
       const versionSource = current?.slug === slug ? source : starterSource;
       const versionData = current?.slug === slug ? parsedData() : JSON.parse(starterData);
+      const baseVersion = current?.slug === slug ? current.version : undefined;
       const created = await request<TemplateVersion>(`/v1/templates/${slug}/versions`, {
         method: "POST",
-        body: JSON.stringify({ source: versionSource, sampleData: versionData }),
+        body: JSON.stringify({ source: versionSource, sampleData: versionData, ...(baseVersion === undefined ? {} : { baseVersion }) }),
       });
       await refresh({ slug: created.slug, version: created.version });
       setMessage(`Draft v${created.version} created`);
@@ -361,6 +386,56 @@ function App() {
     setUser(null);
   }
 
+  async function uploadAssets(files: FileList | null) {
+    if (!current || !editable || !files?.length) return;
+    const target = { slug: current.slug, version: current.version };
+    setBusy(files.length === 1 ? "uploading asset" : `uploading ${files.length} assets`);
+    try {
+      for (const file of Array.from(files)) {
+        const uploaded = await request<TemplateAsset>(`/v1/templates/${current.slug}/versions/${current.version}/assets/${encodeURIComponent(file.name)}`, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (activeSelection.current?.slug !== target.slug || activeSelection.current.version !== target.version) break;
+        setAssets((items) => [...items.filter((item) => item.filename !== uploaded.filename), uploaded].sort((a, b) => a.filename.localeCompare(b.filename)));
+        setAssetRevision((revision) => revision + 1);
+      }
+      setMessage(files.length === 1 ? "Asset uploaded" : `${files.length} assets uploaded`);
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+      if (assetInput.current) assetInput.current.value = "";
+    }
+  }
+
+  async function deleteAsset(asset: TemplateAsset) {
+    if (!current || !editable || !window.confirm(`Delete assets/${asset.filename}?`)) return;
+    const target = { slug: current.slug, version: current.version };
+    setBusy("deleting asset");
+    try {
+      await request<void>(`/v1/templates/${current.slug}/versions/${current.version}/assets/${encodeURIComponent(asset.filename)}`, { method: "DELETE" });
+      if (activeSelection.current?.slug !== target.slug || activeSelection.current.version !== target.version) return;
+      setAssets((items) => items.filter((item) => item.filename !== asset.filename));
+      setAssetRevision((revision) => revision + 1);
+      setMessage("Asset deleted");
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function copyAssetPath(filename: string) {
+    try {
+      await navigator.clipboard.writeText(`assets/${filename}`);
+      setMessage("Asset path copied");
+    } catch {
+      setMessage("Unable to copy asset path");
+    }
+  }
+
   const selectedTemplate = templates.find((template) => template.slug === selectedSlug);
   const archived = !!selectedTemplate?.archivedAt;
   const editable = !!user?.admin && current?.status === "draft" && !archived;
@@ -402,6 +477,7 @@ function App() {
     setSampleData("{}");
     setSavedSampleData("{}");
     setContract(null);
+    setAssets([]);
     setPreviewURL("");
     setMessage("");
   }
@@ -505,7 +581,7 @@ function App() {
     }
     const timeout = window.setTimeout(() => preview(true), 1600);
     return () => window.clearTimeout(timeout);
-  }, [current?.slug, current?.version, selection?.slug, selection?.version, source, sampleData]);
+  }, [current?.slug, current?.version, selection?.slug, selection?.version, source, sampleData, assetRevision]);
 
 	useEffect(() => {
 		if (!editable || !current || !selection || current.slug !== selection.slug || current.version !== selection.version) return;
@@ -679,8 +755,28 @@ function App() {
               }
             }}
           />}
-          <button className="drawer-toggle" onClick={() => setDataOpen(!dataOpen)}><span>Test data <small>report.json / data.json</small></span><span>{dataOpen ? "Hide" : "Show"}</span></button>
-          {dataOpen && <div className="data-editor"><CodeMirror className="data-code-editor" value={sampleData} onChange={setSampleData} editable={editable && !publishing} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: true }} /></div>}
+          <div className="drawer-bar">
+            <div className="drawer-tabs" role="tablist" aria-label="Template resources">
+              <button className={drawerTab === "data" ? "active" : ""} role="tab" aria-selected={drawerTab === "data"} onClick={() => { setDrawerTab("data"); setDataOpen(true); }}>Test data <small>report.json / data.json</small></button>
+              <button className={drawerTab === "assets" ? "active" : ""} role="tab" aria-selected={drawerTab === "assets"} onClick={() => { setDrawerTab("assets"); setDataOpen(true); }}>Assets <small>{assets.length}</small></button>
+            </div>
+            <button className="drawer-visibility" onClick={() => setDataOpen(!dataOpen)}>{dataOpen ? "Hide" : "Show"}</button>
+          </div>
+          {dataOpen && drawerTab === "data" && <div className="data-editor" role="tabpanel"><CodeMirror className="data-code-editor" value={sampleData} onChange={setSampleData} editable={editable && !publishing} height="100%" theme="dark" basicSetup={{ lineNumbers: true, foldGutter: true }} /></div>}
+          {dataOpen && drawerTab === "assets" && <div className="assets-panel" role="tabpanel">
+            <div className="assets-toolbar">
+              <span>Files are available to Typst beneath <code>assets/</code>.</span>
+              {editable && <><input ref={assetInput} type="file" multiple onChange={(event) => uploadAssets(event.target.files)} disabled={!!busy} /><button className="asset-upload" onClick={() => assetInput.current?.click()} disabled={!!busy}>Upload assets</button></>}
+            </div>
+            <div className="asset-list">
+              {assets.map((asset) => <article className="asset-row" key={asset.filename}>
+                <code title={`assets/${asset.filename}`}>assets/{asset.filename}</code>
+                <span>{formatBytes(asset.sizeBytes)} / {asset.contentType}</span>
+                <div><button onClick={() => copyAssetPath(asset.filename)}>Copy path</button>{editable && <button className="danger" onClick={() => deleteAsset(asset)} disabled={!!busy}>Delete</button>}</div>
+              </article>)}
+              {assets.length === 0 && <div className="assets-empty">No assets in this version.</div>}
+            </div>
+          </div>}
         </section>
       </section></> : area === "reports" ? <ReportsArea /> : area === "storage" ? <StorageArea /> : area === "clients" ? <APIClientsArea /> : <DocsArea />}
 

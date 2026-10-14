@@ -319,11 +319,14 @@ Open `http://localhost:8080` to use the embedded template workbench. It includes
 - On-demand PDF compilation and preview
 - Template and version navigation
 - Draft creation and saving
+- Template-scoped asset uploads with stable paths such as `assets/logo.png`
 - Dirty-state warnings, keyboard save/preview shortcuts, and draft discard
 - Draft approval and immutable publishing
 - Debounced contract analysis that adds missing fake-data fields, displays diagnostics and a schema hash, and blocks unsafe approval
 
 The lifecycle is `draft -> approved -> published`. **Save & approve** persists pending changes and advances a valid draft in one action; approval compiles and locks the version before publication. Published history opens read-only; use **Create editable draft** or **Open draft** to make changes. Approved versions are locked, and published versions cannot be modified by the application or directly in Postgres.
+
+Each template version has an **Assets** bin in the editor. Administrators can upload PNG, JPEG, GIF, WebP, SVG, and PDF files to drafts and reference them from Typst with `#image("assets/logo.png")`. Files are stored once under content-addressed keys in the configured object storage, while each version keeps an immutable filename-to-hash manifest. New drafts inherit the selected version's manifest without re-uploading bytes. Replacing a filename affects only that draft; approved and published versions remain pinned to their original assets. Individual assets are limited to 5 MiB, with at most 100 assets and 20 MiB per template version.
 
 Administrators can archive and restore an entire template. Archived templates are hidden from the published machine catalog and the default editor list, but their immutable versions, existing reports, downloads, explicit version-pinned submissions, retry lineage, and storage placements remain functional.
 
